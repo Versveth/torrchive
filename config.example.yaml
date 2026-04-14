@@ -1,0 +1,248 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Torrchive — config.example.yaml
+#
+# Copy this file to config.yaml and edit to match your setup.
+# All passwords and tokens can use ${ENV_VAR} syntax to read from environment
+# variables instead of being stored in plain text.
+#
+# Usage:
+#   torrchive.py scan                  # preview what would be transcoded
+#   torrchive.py run --dry-run         # same, formatted as a run
+#   torrchive.py run                   # transcode all eligible files
+#   torrchive.py run --library Anime   # transcode a specific library only
+#   torrchive.py run --parallel 4      # override parallel jobs (CLI wins over config)
+#   torrchive.py status                # show space saved so far
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─── Media paths ──────────────────────────────────────────────────────────────
+# List every top-level folder you want Torrchive to scan.
+# Add as many as you need — one per library, one for everything, your choice.
+#
+media:
+  paths:
+    - /mnt/media/Movies
+    - /mnt/media/TV
+    - /mnt/media/Anime
+  # Files smaller than this are ignored (samples, trailers, extras).
+  min_size_mb: 100
+
+
+# ─── Torrent client ───────────────────────────────────────────────────────────
+# Torrchive will NEVER touch a file still known to your torrent client,
+# regardless of its state (seeding, paused, queued, stalled, etc.).
+# Only files that have been fully removed from your client are eligible.
+#
+# type: qbittorrent | deluge | transmission | none
+#   none → no protection, every file is eligible (use with caution)
+#
+# Supported clients:
+#
+#   qBittorrent — enable Web UI in Tools > Options > Web UI
+#   url: http://localhost:8080   (default port, change if needed)
+#
+#   Deluge — enable Web plugin in Preferences > Plugins
+#   url: http://localhost:8112
+#
+#   Transmission — RPC enabled by default
+#   url: http://localhost:9091
+#
+# Passwords can use environment variables to avoid plain text storage:
+#   password: ${QBIT_PASSWORD}
+#   Then: export QBIT_PASSWORD=yourpassword before running Torrchive.
+#
+torrent_client:
+  type: qbittorrent
+  url: http://localhost:8080
+  username: admin
+  password: ${QBIT_PASSWORD}
+
+# Deluge example:
+# torrent_client:
+#   type: deluge
+#   url: http://localhost:8112
+#   password: ${DELUGE_PASSWORD}
+
+# Transmission example:
+# torrent_client:
+#   type: transmission
+#   url: http://localhost:9091
+#   username: transmission
+#   password: ${TRANSMISSION_PASSWORD}
+
+# No torrent client — all files eligible:
+# torrent_client:
+#   type: none
+
+
+# ─── Encoder ─────────────────────────────────────────────────────────────────
+#
+# backend: auto | nvenc | vaapi | videotoolbox | software
+#   auto         → detects best available hardware, falls back to software
+#   nvenc        → NVIDIA GPU (requires CUDA-capable ffmpeg + NVIDIA driver)
+#   vaapi        → Intel or AMD GPU on Linux (/dev/dri/renderD128)
+#   videotoolbox → Apple Silicon or Intel Mac (macOS only)
+#   software     → CPU encoding, no GPU required (slower but works everywhere)
+#
+# codec: hevc | av1 | h264
+#   hevc → H.265 — best balance of quality, size, and compatibility.
+#           Plays on virtually every device, Plex and Jellyfin handle it natively.
+#           Recommended for most users.
+#   av1  → ~30% smaller than HEVC at equal quality. Newer clients only.
+#           Not supported on videotoolbox. Software encoding is slow.
+#           Good choice if you have modern clients and patience.
+#   h264 → Maximum compatibility (older TVs, devices). Larger files than HEVC.
+#           Use only if your clients can't handle HEVC.
+#
+# quality: CQ/CRF value — lower = better quality, larger file
+#   Recommended ranges:
+#     hevc nvenc:    22–28  (26 is a good starting point)
+#     hevc vaapi:    22–28
+#     hevc software: 20–26  (22–24 recommended)
+#     av1 software:  28–35  (30–32 recommended)
+#     h264 nvenc:    20–26
+#     h264 software: 18–24
+#
+# preset: encoding speed vs quality tradeoff
+#   nvenc:        p1 (fastest) → p7 (best quality, slowest)  — p5 or p6 recommended
+#   vaapi:        1 (fastest)  → 8 (best)
+#   videotoolbox: baseline, main, high
+#   software:     ultrafast → veryslow  — medium or slow recommended
+#
+# max_resolution: null | 720 | 1080 | 1440 | 2160
+#   null → keep original resolution (recommended for most users)
+#   1080 → downscale anything above 1080p (e.g. 4K sources → 1080p)
+#          useful if your clients or TV can't play 4K, or to save space
+#
+# audio: copy | aac | opus
+#   copy → keep all original audio tracks exactly as-is (recommended)
+#           preserves surround sound (5.1, 7.1), DTS, TrueHD, EAC3, etc.
+#   aac  → re-encode all audio to AAC stereo. Smaller, widely compatible.
+#           loses surround sound — only use if your setup is stereo only.
+#   opus → re-encode to Opus stereo. Smallest, modern clients only.
+#
+# skip_if_already_optimal: true | false
+#   true  → skip files already in the target codec with no resolution change needed
+#            (e.g. if target is hevc, skip files already encoded as hevc)
+#   false → re-encode everything regardless of current codec
+#            useful for normalising quality settings across an inconsistent library
+#
+# skip_source_codecs: list of codecs to never re-encode, regardless of target
+#   Common use cases:
+#     [av1, vp9]  → skip already-efficient modern codecs
+#     [hevc]      → skip files already in HEVC even if targeting a different profile
+#     []          → no exclusions (default — let skip_if_already_optimal handle it)
+#
+# normalize_filename: true | false
+#   true → rewrite stale codec/resolution tokens in filenames after transcoding
+#          e.g. Show.S01E01.x264.mkv → Show.S01E01.x265.mkv
+#          e.g. Movie.2160p.x264.mkv → Movie.1080p.x265.mkv (if downscaling)
+#   false → leave filenames untouched
+#
+encoder:
+  backend: auto
+  codec: hevc
+  quality: 26
+  preset: p6
+  max_resolution: null
+  audio: copy
+  audio_bitrate: 192k   # only used when audio is aac or opus
+  audio_channels: 2     # only used when audio is aac or opus
+  skip_if_already_optimal: true
+  skip_source_codecs: []
+  normalize_filename: true
+
+# NVIDIA GPU high-quality example:
+# encoder:
+#   backend: nvenc
+#   codec: hevc
+#   quality: 22
+#   preset: p7
+#   audio: copy
+#   normalize_filename: true
+
+# Intel/AMD GPU example:
+# encoder:
+#   backend: vaapi
+#   codec: hevc
+#   quality: 24
+#   preset: 6
+#   audio: copy
+#   normalize_filename: true
+
+# CPU-only AV1 example (no GPU required, slower):
+# encoder:
+#   backend: software
+#   codec: av1
+#   quality: 30
+#   preset: medium
+#   audio: copy
+#   normalize_filename: true
+
+# 4K → 1080p downscale example:
+# encoder:
+#   backend: auto
+#   codec: hevc
+#   quality: 24
+#   max_resolution: 1080
+#   audio: copy
+#   normalize_filename: true
+
+
+# ─── Schedule ─────────────────────────────────────────────────────────────────
+# Restrict transcoding to a time window — useful for solar production hours,
+# off-peak electricity tariffs, or simply not running during the day.
+# The process sleeps outside the window and resumes automatically.
+# Override at runtime with --no-schedule for a manual full run.
+#
+schedule:
+  enabled: false
+  start: "09:00"
+  stop:  "20:00"
+
+
+# ─── Performance ──────────────────────────────────────────────────────────────
+# scan_workers: parallel ffprobe processes during library scan
+#   Higher values = faster scan, more disk/NFS load during scan phase.
+#   16 is a good default. Reduce if your NAS struggles during scan.
+#
+# parallel: concurrent transcode jobs
+#   How many files to encode simultaneously.
+#   The right value depends entirely on your hardware:
+#     - NVIDIA NVENC: the encoder block saturates quickly.
+#       Run nvidia-smi dmon -s uc and watch the "enc" column.
+#       If enc hits 100% with N jobs, adding more won't help.
+#       Typical sweet spot: 3–4 for RTX 3000/4000/5000 series.
+#     - Software (CPU): set to number of physical cores / 2
+#     - VAAPI: 2–4 depending on iGPU generation
+#   Start with 2, increase by 1 while monitoring GPU encoder utilisation.
+#
+performance:
+  scan_workers: 16
+  parallel: 1
+
+
+# ─── Post-transcode hooks ─────────────────────────────────────────────────────
+# Optionally trigger a Plex or Jellyfin library refresh after each run.
+# Both can be enabled simultaneously if you run both servers.
+#
+# Plex token: Settings > Account > Plex.tv > copy the token from any API call,
+#   or visit: https://support.plex.tv/articles/204059436
+#
+# Jellyfin token: Dashboard > API Keys > generate a new key
+#
+post_transcode:
+  enabled: false
+  plex_url: ""          # e.g. http://localhost:32400
+  plex_token: ""        # or ${PLEX_TOKEN}
+  jellyfin_url: ""      # e.g. http://localhost:8096
+  jellyfin_token: ""    # or ${JELLYFIN_TOKEN}
+
+
+# ─── File paths ───────────────────────────────────────────────────────────────
+# Where Torrchive writes its log, ledger, and probe cache.
+# Use absolute paths. Defaults to the directory next to the script if omitted.
+#
+log_file: torrchive.log
+ledger_file: torrchive_ledger.json
+probe_cache_file: torrchive_probe_cache.json
