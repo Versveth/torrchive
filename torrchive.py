@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Torrchive — Community HEVC/AV1 archive transcoder
-https://github.com/YOUR_USERNAME/torrchive
+https://github.com/Versveth/torrchive
 
 Transcodes media files no longer being seeded into space-efficient formats,
 keeping them alive in Plex/Jellyfin at a fraction of the original size.
@@ -552,9 +552,8 @@ def probe_file(path: Path) -> tuple[str, int]:
 
 class ProbeCache:
     """
-    Persistent ffprobe result cache keyed by path + mtime.
+    ffprobe result cache keyed by path + mtime.
     Re-probes only if the file has changed since last scan.
-    Dramatically speeds up subsequent runs on large libraries.
     """
 
     def __init__(self, path: Path):
@@ -784,7 +783,7 @@ def transcode_file(vf: VideoFile, profile: EncoderProfile,
     src = vf.path
 
     # Always output MKV — avoids MP4 container restrictions with HEVC
-    # Use a short hash-based tmp name to avoid hitting the 255-byte filename limit
+    # Hash-based tmp name avoids 255-byte filename limit on long titles
     import hashlib
     path_hash = hashlib.md5(str(src).encode()).hexdigest()[:12]
     tmp = src.parent / f".torrchive_tmp_{path_hash}.mkv"
@@ -849,7 +848,7 @@ def transcode_file(vf: VideoFile, profile: EncoderProfile,
             tmp.unlink(missing_ok=True)
             return False
 
-        # Atomic replace: remove source, rename temp to final destination
+        # Replace source with transcoded output
         if dst != src:
             src.unlink()
         os.replace(tmp, dst)
@@ -938,7 +937,7 @@ def run_transcode(cfg: dict, managed_files: set[str], profile: EncoderProfile,
         return
 
     target = queue[:limit] if limit > 0 else queue
-    # CLI --parallel overrides config; config overrides default of 1
+    # CLI --parallel overrides config value
     if parallel == 1:
         parallel = cfg_parallel
     parallel = max(1, parallel)
@@ -984,7 +983,6 @@ def run_transcode(cfg: dict, managed_files: set[str], profile: EncoderProfile,
 
     logging.info(f"\nPipeline complete: {success} transcoded, {failed} failed")
 
-    # Post-transcode hooks
     if success > 0:
         _run_post_transcode_hooks(cfg)
 
@@ -1103,11 +1101,9 @@ Examples:
         run_status(cfg)
         return
 
-    # Build torrent client
     client = build_torrent_client(cfg.get("torrent_client", {"type": "none"}))
     managed_files = client.get_managed_files()
 
-    # Build encoder profile
     profile = build_encoder_profile(cfg.get("encoder", {}))
     logging.info(
         f"Encoder: {profile.backend} / {profile.codec.upper()} / "
