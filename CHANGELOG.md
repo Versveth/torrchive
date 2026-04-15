@@ -9,6 +9,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.1.2] - 2026-04-15
+
+### Added
+- **Launcher scripts** — `start.sh` (Linux/macOS) and `start.bat` (Windows)
+  - Auto-detects Python 3.10+, installs missing dependencies, checks ffmpeg
+  - Launches setup wizard automatically on first run
+  - No terminal or Python knowledge required for Windows users
+- **Interactive setup wizard** (`python3 torrchive.py setup`)
+  - Language selection first — all subsequent prompts in chosen language
+  - Media path validation with NFS mount detection and fstab guidance
+  - Live torrent client connection test during setup
+  - GPU auto-detection with parallel job suggestion
+  - Full config preview before writing
+  - Optional scan immediately after setup
+
+---
+
 ## [0.1.1] - 2026-04-15
 
 ### Added

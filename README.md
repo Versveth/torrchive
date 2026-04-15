@@ -47,19 +47,26 @@ git clone https://github.com/Versveth/torrchive.git
 cd torrchive
 
 # 2. Installer les dépendances
-pip install pyyaml requests
+pip install pyyaml requests rich
+```
 
-# 3. Créer votre configuration
-cp config.example.yaml config.yaml
-# Éditez config.yaml selon votre installation
+**Linux / macOS — méthode recommandée**
+```bash
+./start.sh
+```
 
-# 4. Scanner d'abord — voir ce qui serait transcodé
+**Windows — méthode recommandée**
+
+Double-cliquez sur `start.bat`. Le script vérifie Python, installe les dépendances, vérifie ffmpeg et lance l'assistant de configuration.
+
+**Assistant de configuration (première utilisation)**
+```bash
+python3 torrchive.py setup
+```
+
+**Puis :**
+```bash
 python3 torrchive.py scan
-
-# 5. Simulation — aucun fichier modifié
-python3 torrchive.py run --dry-run
-
-# 6. Lancer
 python3 torrchive.py run
 ```
 
@@ -279,19 +286,26 @@ git clone https://github.com/Versveth/torrchive.git
 cd torrchive
 
 # 2. Install dependencies
-pip install pyyaml requests
+pip install pyyaml requests rich
+```
 
-# 3. Create your config
-cp config.example.yaml config.yaml
-# Edit config.yaml to match your setup
+**Linux / macOS — recommended**
+```bash
+./start.sh
+```
 
-# 4. Scan first — see what would be transcoded
+**Windows — recommended**
+
+Double-click `start.bat`. It checks for Python, installs dependencies, verifies ffmpeg and launches the setup wizard.
+
+**Setup wizard (first run)**
+```bash
+python3 torrchive.py setup
+```
+
+**Then:**
+```bash
 python3 torrchive.py scan
-
-# 5. Dry run — no files modified
-python3 torrchive.py run --dry-run
-
-# 6. Run
 python3 torrchive.py run
 ```
 
