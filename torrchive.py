@@ -600,10 +600,18 @@ class ProbeCache:
         self._data[key] = {"codec": codec, "height": height}
         self._dirty = True
 
-    def purge_stale(self, known_paths: set):
-        """Remove cache entries for files that no longer exist."""
+    def purge_stale(self, known_paths: set, scanned_dirs: list):
+        """
+        Remove cache entries for files under scanned directories that no
+        longer exist. Entries from other libraries are left untouched.
+        """
+        scanned_strs = [str(p) for p in scanned_dirs]
         known_strs = {str(p) for p in known_paths}
-        stale = [k for k in self._data if k.split(":")[0] not in known_strs]
+        stale = [
+            k for k in self._data
+            if any(k.split(":")[0].startswith(d) for d in scanned_strs)
+            and k.split(":")[0] not in known_strs
+        ]
         for k in stale:
             del self._data[k]
         if stale:
@@ -739,7 +747,7 @@ def scan(media_paths: list[Path], managed_files: set[str],
                 logging.info(f"  Probed {done}/{len(all_files)} files...")
 
     if cache:
-        cache.purge_stale(set(all_files))
+        cache.purge_stale(set(all_files), media_paths)
         cache.save()
 
     return [results[f] for f in sorted(results)]
