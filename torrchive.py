@@ -66,6 +66,83 @@ except ImportError:
 
 __version__ = "0.1.0"
 
+# ─── i18n ────────────────────────────────────────────────────────────────────
+
+def _compile_po(po_path: Path, mo_path: Path):
+    """Pure Python .po → .mo compiler. No external tools required."""
+    import struct
+    entries: dict[str, str] = {}
+    msgid = msgstr = None
+    with open(po_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip()
+            if line.startswith("msgid "):
+                msgid = line[7:-1]
+            elif line.startswith("msgstr "):
+                msgstr = line[8:-1]
+                if msgid is not None:
+                    entries[msgid] = msgstr
+                msgid = msgstr = None
+
+    keys = sorted(entries.keys())
+    ids = b""
+    strs = b""
+    offsets = []
+    for k in keys:
+        v = entries[k]
+        offsets.append((len(ids), len(k.encode()), len(strs), len(v.encode("utf-8"))))
+        ids += k.encode() + b"\x00"
+        strs += v.encode("utf-8") + b"\x00"
+
+    n = len(keys)
+    o_table = 28
+    t_table = o_table + n * 8
+    o_data = t_table + n * 8
+    t_data = o_data + len(ids)
+
+    mo_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(mo_path, "wb") as f:
+        f.write(struct.pack("<IIIIIII", 0x950412DE, 0, n, o_table, t_table, 0, 0))
+        for oi, li, _, _ in offsets:
+            f.write(struct.pack("<II", li, o_data + oi))
+        for _, _, ot, lt in offsets:
+            f.write(struct.pack("<II", lt, t_data + ot))
+        f.write(ids)
+        f.write(strs)
+
+
+def setup_i18n(language: str = "fr") -> callable:
+    """
+    Load translations for the given language code.
+    Falls back to French if the requested language is unavailable.
+    Auto-compiles .po to .mo if .mo is missing or outdated.
+    """
+    locale_dir = Path(__file__).parent / "locales"
+
+    po = locale_dir / language / "LC_MESSAGES" / "torrchive.po"
+    mo = locale_dir / language / "LC_MESSAGES" / "torrchive.mo"
+    if po.exists() and (not mo.exists() or mo.stat().st_mtime < po.stat().st_mtime):
+        try:
+            _compile_po(po, mo)
+        except Exception as e:
+            print(f"Warning: could not compile {po}: {e}")
+
+    try:
+        t = gettext_module.translation(
+            "torrchive", localedir=str(locale_dir), languages=[language]
+        )
+        return t.gettext
+    except FileNotFoundError:
+        try:
+            t = gettext_module.translation(
+                "torrchive", localedir=str(locale_dir), languages=["fr"]
+            )
+            return t.gettext
+        except FileNotFoundError:
+            return lambda s: s
+
+
+
 
 # ─── Config loader ───────────────────────────────────────────────────────────
 
