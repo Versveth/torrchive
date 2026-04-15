@@ -83,14 +83,15 @@ def load_config(path: Path) -> dict:
 
 def setup_logging(log_file: Optional[Path]):
     """
-    Log to file only when configured, stdout only otherwise.
-    Prevents duplicate lines when nohup redirects stdout to the same log file.
+    Always log to stdout for interactive use.
+    Additionally log to file when configured.
+    When running via nohup with stdout redirected to the log file,
+    use --log-file-only flag or omit stdout redirect to avoid duplicates.
     """
+    handlers: list = [logging.StreamHandler(sys.stdout)]
     if log_file:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        handlers: list = [logging.FileHandler(log_file)]
-    else:
-        handlers = [logging.StreamHandler(sys.stdout)]
+        handlers.append(logging.FileHandler(log_file))
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -712,6 +713,7 @@ def scan(media_paths: list[Path], managed_files: set[str],
         all_files.extend(
             f for f in sorted(base.rglob("*"))
             if f.suffix.lower() in VIDEO_EXTENSIONS
+            and ".torrchive_tmp_" not in f.name
         )
 
     cached_count = sum(1 for f in all_files if cache and cache.get(f))
