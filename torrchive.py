@@ -66,6 +66,10 @@ except ImportError:
 
 __version__ = "0.1.0"
 
+# Fallback translation function — replaced at runtime by setup_i18n()
+def _(s: str) -> str:
+    return s
+
 # ─── i18n ────────────────────────────────────────────────────────────────────
 
 def _compile_po(po_path: Path, mo_path: Path):
@@ -1120,10 +1124,13 @@ def _run_with_progress(target: list, profile, ledger_path: Path,
 
     job_tasks: dict[int, TaskID] = {}
 
+    display_sem = __import__("threading").Semaphore(parallel)
+
     def _worker(idx: int, vf) -> bool:
         if schedule_enabled:
             wait_for_schedule(start_t, stop_t)
 
+        display_sem.acquire()
         short_name = vf.path.name[:55] + "…" if len(vf.path.name) > 55 else vf.path.name
         job_id = job_progress.add_task(short_name, total=100)
         with lock:
@@ -1142,6 +1149,7 @@ def _run_with_progress(target: list, profile, ledger_path: Path,
         job_progress.update(job_id, completed=100, visible=False)
         job_progress.stop_task(job_id)
         job_progress.remove_task(job_id)
+        display_sem.release()
 
         with lock:
             if ok:
@@ -1456,8 +1464,8 @@ Examples:
     cfg = load_config(args.config)
 
     # Set up translations before any output
-    import builtins
-    builtins._ = setup_i18n(cfg.get("language", "fr"))
+    global _
+    _ = setup_i18n(cfg.get("language", "fr"))
 
     log_file = cfg.get("log_file")
     setup_logging(Path(log_file) if log_file else None)
