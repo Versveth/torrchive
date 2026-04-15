@@ -66,9 +66,20 @@ except ImportError:
 
 __version__ = "0.1.0"
 
-# Fallback translation function — replaced at runtime by setup_i18n()
-def _(s: str) -> str:
-    return s
+
+class _Translator:
+    """Deferred translator — updates in place so all modules and threads see the change."""
+    def __init__(self):
+        self._fn = lambda s: s
+
+    def __call__(self, s: str) -> str:
+        return self._fn(s)
+
+    def set(self, fn):
+        self._fn = fn
+
+
+_ = _Translator()
 
 # ─── i18n ────────────────────────────────────────────────────────────────────
 
@@ -1464,8 +1475,7 @@ Examples:
     cfg = load_config(args.config)
 
     # Set up translations before any output
-    global _
-    _ = setup_i18n(cfg.get("language", "fr"))
+    _.set(setup_i18n(cfg.get("language", "fr")))
 
     log_file = cfg.get("log_file")
     setup_logging(Path(log_file) if log_file else None)
