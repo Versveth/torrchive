@@ -86,8 +86,9 @@ tr = _Translator()
 def _compile_po(po_path: Path, mo_path: Path):
     """Pure Python .po → .mo compiler. No external tools required."""
     import struct
-    entries: dict[str, str] = {}
+    entries: dict[bytes, bytes] = {}
     msgid = msgstr = None
+
     with open(po_path, encoding="utf-8") as f:
         for line in f:
             line = line.rstrip()
@@ -96,8 +97,12 @@ def _compile_po(po_path: Path, mo_path: Path):
             elif line.startswith("msgstr "):
                 msgstr = line[8:-1]
                 if msgid is not None:
-                    entries[msgid] = msgstr
+                    entries[msgid.encode("utf-8")] = msgstr.encode("utf-8")
                 msgid = msgstr = None
+
+    # Add metadata entry so gettext knows the charset
+    metadata = b"Content-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\n"
+    entries[b""] = metadata
 
     keys = sorted(entries.keys())
     ids = b""
@@ -105,9 +110,9 @@ def _compile_po(po_path: Path, mo_path: Path):
     offsets = []
     for k in keys:
         v = entries[k]
-        offsets.append((len(ids), len(k.encode()), len(strs), len(v.encode("utf-8"))))
-        ids += k.encode() + b"\x00"
-        strs += v.encode("utf-8") + b"\x00"
+        offsets.append((len(ids), len(k), len(strs), len(v)))
+        ids += k + b"\x00"
+        strs += v + b"\x00"
 
     n = len(keys)
     o_table = 28
