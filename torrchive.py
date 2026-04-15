@@ -745,6 +745,20 @@ def scan(media_paths: list[Path], managed_files: set[str],
     return [results[f] for f in sorted(results)]
 
 
+# Codec efficiency order — higher index = more efficient
+# A source codec more efficient than the target is never worth re-encoding
+CODEC_EFFICIENCY = ["h264", "mpeg4", "xvid", "divx", "mpeg2video", "hevc", "av1", "vp9"]
+
+
+def _is_more_efficient(source_codec: str, target_codec: str) -> bool:
+    """Return True if source codec is more efficient than the target."""
+    src = source_codec.lower()
+    tgt = target_codec.lower()
+    src_rank = CODEC_EFFICIENCY.index(src) if src in CODEC_EFFICIENCY else -1
+    tgt_rank = CODEC_EFFICIENCY.index(tgt) if tgt in CODEC_EFFICIENCY else -1
+    return src_rank > tgt_rank
+
+
 def filter_queue(files: list[VideoFile], profile: EncoderProfile,
                  encoder_cfg: dict) -> list[VideoFile]:
     """Return files that need transcoding based on encoder profile and config."""
@@ -765,6 +779,15 @@ def filter_queue(files: list[VideoFile], profile: EncoderProfile,
         if vf.codec in skip_source_codecs:
             vf.skip_reason = f"skipped ({vf.codec.upper()} — excluded by skip_source_codecs)"
             continue
+
+        # Skip if source codec is already more efficient than the target
+        if encoder_cfg.get("skip_if_smaller_codec", True):
+            if _is_more_efficient(vf.codec, profile.codec):
+                vf.skip_reason = (
+                    f"skipped ({vf.codec.upper()} is more efficient "
+                    f"than target {profile.codec.upper()})"
+                )
+                continue
 
         # Skip if already optimal (same codec, no resolution change needed)
         if skip_if_already_optimal and vf.codec == profile.codec:
@@ -1128,6 +1151,10 @@ Examples:
             cfg["media"] = dict(cfg["media"])
             cfg["media"]["paths"] = resolved
             logging.info(f"Library override: {resolved}")
+        else:
+            logging.error(f"No matching libraries found for: {args.library}. "
+                         f"Available: {[p.name for p in all_paths]}")
+            sys.exit(1)
 
     if args.mode == "scan":
         run_scan(cfg, managed_files, profile)
