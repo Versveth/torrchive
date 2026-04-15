@@ -34,7 +34,7 @@
 
 - Python 3.10+
 - `ffmpeg` et `ffprobe` dans votre PATH
-- `pip install pyyaml requests`
+- `pip install pyyaml requests rich`
 
 ---
 
@@ -265,7 +265,7 @@ SOFTWARE.
 
 - Python 3.10+
 - `ffmpeg` and `ffprobe` in your PATH
-- `pip install pyyaml requests`
+- `pip install pyyaml requests rich`
 
 ---
 

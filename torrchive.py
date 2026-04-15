@@ -46,6 +46,20 @@ except ImportError:
     print("ERROR: requests is required. Run: pip install requests")
     sys.exit(1)
 
+try:
+    from rich.progress import (
+        Progress, SpinnerColumn, BarColumn, TextColumn,
+        TimeElapsedColumn, TimeRemainingColumn, TaskID,
+        MofNCompleteColumn,
+    )
+    from rich.console import Console
+    from rich.live import Live
+    from rich.table import Table
+    from rich import print as rprint
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+
 
 # ─── Version ─────────────────────────────────────────────────────────────────
 
@@ -523,6 +537,20 @@ class VideoFile:
     skip_reason: Optional[str] = None
 
 
+def get_video_duration(path: Path) -> float:
+    """Return duration in seconds, 0 on failure."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+             "-show_entries", "format=duration", "-of", "json", str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        data = json.loads(result.stdout)
+        return float(data.get("format", {}).get("duration", 0))
+    except Exception:
+        return 0.0
+
+
 def probe_file(path: Path) -> tuple[str, int]:
     """Returns (codec_name, height). Both empty/0 on failure."""
     try:
@@ -812,7 +840,8 @@ def filter_queue(files: list[VideoFile], profile: EncoderProfile,
 # ─── Transcode ───────────────────────────────────────────────────────────────
 
 def transcode_file(vf: VideoFile, profile: EncoderProfile,
-                   ledger_path: Path) -> bool:
+                   ledger_path: Path,
+                   progress_callback=None) -> bool:
     src = vf.path
 
     # Always output MKV — avoids MP4 container restrictions with HEVC
@@ -838,22 +867,59 @@ def transcode_file(vf: VideoFile, profile: EncoderProfile,
         logging.info(f"  Filename: {src.name} → {dst.name}")
 
     cmd = build_ffmpeg_cmd(src, tmp, profile, vf.height)
+    duration = get_video_duration(src) if progress_callback else 0.0
 
     try:
         start = time.time()
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=7200,
-        )
+
+        if progress_callback and duration > 0:
+            # Stream stderr to parse progress and update callback
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            stderr_lines = []
+            frame_re = re.compile(r"frame=\s*(\d+)")
+            try:
+                for line in proc.stderr:
+                    stderr_lines.append(line)
+                    m = frame_re.search(line)
+                    if m:
+                        # Estimate progress from fps * duration
+                        pass
+                    if "time=" in line:
+                        # Parse time=HH:MM:SS.ss
+                        t_match = re.search(r"time=(\d+):(\d+):([\d.]+)", line)
+                        if t_match:
+                            h, m_, s = t_match.groups()
+                            elapsed_enc = int(h)*3600 + int(m_)*60 + float(s)
+                            pct = min(elapsed_enc / duration, 1.0) if duration else 0
+                            progress_callback(pct)
+            finally:
+                proc.wait()
+            stderr_out = "".join(stderr_lines[-20:])
+            returncode = proc.returncode
+        else:
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=7200,
+            )
+            stderr_out = result.stderr
+            returncode = result.returncode
+
         elapsed = time.time() - start
 
-        if result.returncode != 0:
-            logging.error(f"ffmpeg failed: {result.stderr[-500:]}")
+        if returncode != 0:
+            logging.error(f"ffmpeg failed: {stderr_out[-500:]}")
             tmp.unlink(missing_ok=True)
             return False
 
@@ -906,6 +972,134 @@ def transcode_file(vf: VideoFile, profile: EncoderProfile,
 
 
 # ─── Modes ───────────────────────────────────────────────────────────────────
+
+
+def _run_with_progress(target: list, profile, ledger_path: Path,
+                       parallel: int, schedule_enabled: bool,
+                       start_t, stop_t):
+    """Rich progress UI with per-job bars and overall ETA."""
+    import threading
+    import signal
+
+    console = Console()
+    lock = threading.Lock()
+    success = [0]
+    failed = [0]
+    saved_mb = [0.0]
+
+    # Track tmp files for cleanup prompt
+    tmp_files: list[Path] = []
+
+    overall_progress = Progress(
+        TextColumn("[bold blue]Overall"),
+        BarColumn(bar_width=40),
+        MofNCompleteColumn(),
+        TextColumn("•"),
+        TimeElapsedColumn(),
+        TextColumn("ETA"),
+        TimeRemainingColumn(),
+        TextColumn("• Saved: [green]{task.fields[saved]}"),
+        console=console,
+    )
+    job_progress = Progress(
+        TextColumn("  [cyan]{task.description}"),
+        BarColumn(bar_width=30),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeRemainingColumn(),
+        console=console,
+    )
+
+    overall_task = overall_progress.add_task(
+        "Transcoding", total=len(target), saved="0 GB"
+    )
+
+    job_tasks: dict[int, TaskID] = {}
+
+    def _worker(idx: int, vf) -> bool:
+        if schedule_enabled:
+            wait_for_schedule(start_t, stop_t)
+
+        short_name = vf.path.name[:55] + "…" if len(vf.path.name) > 55 else vf.path.name
+        job_id = job_progress.add_task(short_name, total=100)
+        with lock:
+            job_tasks[idx] = job_id
+
+        import hashlib
+        path_hash = hashlib.md5(str(vf.path).encode()).hexdigest()[:12]
+        tmp = vf.path.parent / f".torrchive_tmp_{path_hash}.mkv"
+        tmp_files.append(tmp)
+
+        def _progress_cb(pct: float):
+            job_progress.update(job_id, completed=int(pct * 100))
+
+        ok = transcode_file(vf, profile, ledger_path, progress_callback=_progress_cb)
+
+        job_progress.update(job_id, completed=100)
+        job_progress.stop_task(job_id)
+        job_progress.remove_task(job_id)
+
+        with lock:
+            if ok:
+                success[0] += 1
+                saved_mb[0] += vf.size_mb * 0.65  # rough estimate
+            else:
+                failed[0] += 1
+            overall_progress.update(
+                overall_task,
+                advance=1,
+                saved=f"{saved_mb[0]/1024:.1f} GB"
+            )
+
+        if tmp in tmp_files:
+            tmp_files.remove(tmp)
+
+        return ok
+
+    table = Table.grid()
+    table.add_row(overall_progress)
+    table.add_row(job_progress)
+
+    interrupted = [False]
+
+    def _handle_interrupt(sig, frame):
+        interrupted[0] = True
+
+    old_handler = signal.signal(signal.SIGINT, _handle_interrupt)
+
+    try:
+        with Live(table, console=console, refresh_per_second=4):
+            with ThreadPoolExecutor(max_workers=parallel) as pool:
+                futures = {pool.submit(_worker, i, vf): vf
+                           for i, vf in enumerate(target)}
+                for future in as_completed(futures):
+                    if interrupted[0]:
+                        break
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logging.error(f"Worker error: {e}")
+                        failed[0] += 1
+    finally:
+        signal.signal(signal.SIGINT, old_handler)
+
+    console.print(f"\n[bold green]Done:[/] {success[0]} transcoded, "
+                  f"[red]{failed[0]} failed[/]")
+
+    # Cleanup prompt
+    existing_tmp = [f for f in tmp_files if f.exists()]
+    if existing_tmp:
+        console.print(f"\n[yellow]Found {len(existing_tmp)} incomplete temp file(s).[/]")
+        try:
+            answer = input("Delete them? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer == "y":
+            for f in existing_tmp:
+                f.unlink(missing_ok=True)
+            console.print("[green]Temp files deleted.[/]")
+        else:
+            console.print("[dim]Temp files kept.[/]")
+
 
 def run_scan(cfg: dict, managed_files: set[str], profile: EncoderProfile):
     media_paths = [Path(p) for p in cfg["media"]["paths"]]
@@ -976,18 +1170,21 @@ def run_transcode(cfg: dict, managed_files: set[str], profile: EncoderProfile,
     parallel = max(1, parallel)
     success = 0
     failed = 0
+    saved_mb = 0.0
+
+    use_progress = cfg.get("display", {}).get("progress_bars", True) and RICH_AVAILABLE
 
     logging.info(f"Starting transcode: {len(target)} files, {parallel} parallel job(s)")
 
-    if parallel == 1:
-        for i, vf in enumerate(target):
-            if schedule_enabled:
-                wait_for_schedule(start_t, stop_t)
-            logging.info(f"\n[{i + 1}/{len(target)}] Processing...")
-            if transcode_file(vf, profile, ledger_path):
-                success += 1
-            else:
-                failed += 1
+    if use_progress:
+        _run_with_progress(target, profile, ledger_path, parallel,
+                           schedule_enabled,
+                           start_t if schedule_enabled else None,
+                           stop_t if schedule_enabled else None)
+        # Tally from ledger
+        ledger = load_ledger(ledger_path)
+        success = len([e for e in ledger])
+        failed = 0
     else:
         import threading
         lock = threading.Lock()
@@ -1002,17 +1199,27 @@ def run_transcode(cfg: dict, managed_files: set[str], profile: EncoderProfile,
             logging.info(f"\n[{idx}/{len(target)}] Processing...")
             return transcode_file(vf, profile, ledger_path)
 
-        with ThreadPoolExecutor(max_workers=parallel) as pool:
-            futures = {pool.submit(_worker, vf): vf for vf in target}
-            for future in as_completed(futures):
-                try:
-                    if future.result():
-                        success += 1
-                    else:
-                        failed += 1
-                except Exception as e:
-                    logging.error(f"Worker error: {e}")
+        if parallel == 1:
+            for i, vf in enumerate(target):
+                if schedule_enabled:
+                    wait_for_schedule(start_t, stop_t)
+                logging.info(f"\n[{i + 1}/{len(target)}] Processing...")
+                if transcode_file(vf, profile, ledger_path):
+                    success += 1
+                else:
                     failed += 1
+        else:
+            with ThreadPoolExecutor(max_workers=parallel) as pool:
+                futures = {pool.submit(_worker, vf): vf for vf in target}
+                for future in as_completed(futures):
+                    try:
+                        if future.result():
+                            success += 1
+                        else:
+                            failed += 1
+                    except Exception as e:
+                        logging.error(f"Worker error: {e}")
+                        failed += 1
 
     logging.info(f"\nPipeline complete: {success} transcoded, {failed} failed")
 

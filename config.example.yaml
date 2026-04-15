@@ -149,6 +149,7 @@ encoder:
   audio_bitrate: 192k   # only used when audio is aac or opus
   audio_channels: 2     # only used when audio is aac or opus
   skip_if_already_optimal: true
+  skip_if_smaller_codec: true       # skip sources already more efficient than target (e.g. AV1 when targeting HEVC)
   skip_source_codecs: []
   normalize_filename: true
 
@@ -237,6 +238,16 @@ post_transcode:
   plex_token: ""        # or ${PLEX_TOKEN}
   jellyfin_url: ""      # e.g. http://localhost:8096
   jellyfin_token: ""    # or ${JELLYFIN_TOKEN}
+
+
+# ─── Display ─────────────────────────────────────────────────────────────────
+# progress_bars: true | false
+#   true  → rich interactive progress bars with per-job ETA (requires: pip install rich)
+#           recommended for interactive/foreground runs
+#   false → plain log output, suitable for nohup/background runs
+#
+display:
+  progress_bars: true
 
 
 # ─── File paths ───────────────────────────────────────────────────────────────
