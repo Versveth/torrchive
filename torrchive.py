@@ -737,6 +737,20 @@ def record_transcode(ledger_path: Path, src: str, dst: str,
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".flv", ".mov"}
 
 
+def cleanup_tmp_files(media_paths: list[Path], silent: bool = False) -> int:
+    """Remove any leftover .torrchive_tmp_* files from previous interrupted runs."""
+    found = []
+    for base in media_paths:
+        if base.exists():
+            found.extend(base.rglob(".torrchive_tmp_*.mkv"))
+    if found:
+        for f in found:
+            f.unlink(missing_ok=True)
+        if not silent:
+            logging.info(f"Startup cleanup: removed {len(found)} leftover temp file(s)")
+    return len(found)
+
+
 def scan(media_paths: list[Path], managed_files: set[str],
          min_size_mb: float, workers: int = 16,
          cache: Optional[ProbeCache] = None) -> list[VideoFile]:
@@ -1067,9 +1081,13 @@ def _run_with_progress(target: list, profile, ledger_path: Path,
     interrupted = [False]
     active_procs: list = []
 
+    executor_ref = [None]
+
     def _handle_interrupt(sig, frame):
+        if interrupted[0]:
+            return  # ignore repeated signals
         interrupted[0] = True
-        console.print("\n[yellow]Interrupt received — stopping after current jobs...[/]")
+        console.print("\n[yellow]Interrupt received — stopping active jobs...[/]")
         for proc in active_procs:
             try:
                 proc.terminate()
@@ -1162,6 +1180,8 @@ def run_transcode(cfg: dict, managed_files: set[str], profile: EncoderProfile,
     if schedule_enabled:
         start_t = dtime(*map(int, schedule_cfg.get("start", "09:00").split(":")))
         stop_t = dtime(*map(int, schedule_cfg.get("stop", "20:00").split(":")))
+
+    cleanup_tmp_files(media_paths)
 
     cache_path = Path(cfg.get("probe_cache_file", "torrchive_probe_cache.json"))
     cache = ProbeCache(cache_path)
