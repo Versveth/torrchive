@@ -240,6 +240,16 @@ post_transcode:
   jellyfin_token: ""    # or ${JELLYFIN_TOKEN}
 
 
+# ─── Language ────────────────────────────────────────────────────────────────
+# language: locale code for all output messages, logs and prompts
+#   fr → French (default)
+#   en → English
+#   Add your own translation in locales/<code>/LC_MESSAGES/torrchive.po
+#   See locales/TRANSLATORS.md for instructions
+#
+language: fr
+
+
 # ─── Display ─────────────────────────────────────────────────────────────────
 # progress_bars: true | false
 #   true  → rich interactive progress bars with per-job ETA (requires: pip install rich)

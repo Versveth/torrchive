@@ -26,6 +26,7 @@ import json
 import time
 import logging
 import argparse
+import gettext as gettext_module
 import subprocess
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -154,7 +155,7 @@ class QBittorrentClient(TorrentClient):
         )
         if resp.text.strip() != "Ok.":
             raise RuntimeError(f"qBittorrent login failed: {resp.text}")
-        logging.info("qBittorrent: authenticated")
+        logging.info(_("qBittorrent: authenticated"))
 
     def get_managed_files(self) -> set[str]:
         if self._managed is not None:
@@ -214,7 +215,7 @@ class DelugeClient(TorrentClient):
         result = self._rpc("auth.login", [password])
         if not result.get("result"):
             raise RuntimeError("Deluge authentication failed")
-        logging.info("Deluge: authenticated")
+        logging.info(_("Deluge: authenticated"))
 
     def get_managed_files(self) -> set[str]:
         if self._managed is not None:
@@ -228,7 +229,7 @@ class DelugeClient(TorrentClient):
                 managed.add(os.path.normpath(os.path.join(save_path, f["path"])))
 
         self._managed = managed
-        logging.info(f"Deluge: {len(managed)} managed files")
+        logging.info(_("Deluge: {} managed files").format(len(managed)))
         return managed
 
 
@@ -281,7 +282,7 @@ class TransmissionClient(TorrentClient):
                 managed.add(os.path.normpath(os.path.join(dl_dir, f["name"])))
 
         self._managed = managed
-        logging.info(f"Transmission: {len(managed)} managed files")
+        logging.info(_("Transmission: {} managed files").format(len(managed)))
         return managed
 
 
@@ -289,7 +290,7 @@ def build_torrent_client(cfg: dict) -> TorrentClient:
     client_type = cfg.get("type", "none").lower()
 
     if client_type == "none":
-        logging.info("Torrent client: none — all files eligible")
+        logging.info(_("Torrent client: none — all files eligible"))
         return NullClient()
 
     if client_type == "qbittorrent":
@@ -378,11 +379,11 @@ def detect_backend() -> str:
         try:
             out = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
             if search in out:
-                logging.info(f"Encoder: auto-detected {backend}")
+                logging.info(_("Encoder: auto-detected {}").format(backend))
                 return backend
         except Exception:
             pass
-    logging.info("Encoder: falling back to software (libx265)")
+    logging.info(_("Encoder: falling back to software (libx265)"))
     return "software"
 
 
@@ -609,7 +610,7 @@ class ProbeCache:
                     f"Probe cache: loaded {len(self._data)} entries from {self.path}"
                 )
             except Exception as e:
-                logging.warning(f"Probe cache: failed to load ({e}), starting fresh")
+                logging.warning(_("Probe cache: failed to load ({}), starting fresh").format(e))
                 self._data = {}
 
     def save(self):
@@ -618,7 +619,7 @@ class ProbeCache:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.path, "w") as f:
             json.dump(self._data, f)
-        logging.info(f"Probe cache: saved {len(self._data)} entries to {self.path}")
+        logging.info(_("Probe cache: saved {} entries to {}").format(len(self._data), self.path))
         self._dirty = False
 
     def _key(self, path: Path) -> str:
@@ -652,7 +653,7 @@ class ProbeCache:
         for k in stale:
             del self._data[k]
         if stale:
-            logging.info(f"Probe cache: purged {len(stale)} stale entries")
+            logging.info(_("Probe cache: purged {} stale entries").format(len(stale)))
             self._dirty = True
 
 
@@ -756,7 +757,7 @@ def cleanup_tmp_files(media_paths: list[Path], silent: bool = False) -> int:
         for f in found:
             f.unlink(missing_ok=True)
         if not silent:
-            logging.info(f"Startup cleanup: removed {len(found)} leftover temp file(s)")
+            logging.info(_("Startup cleanup: removed {} leftover temp file(s)").format(len(found)))
     return len(found)
 
 
@@ -766,9 +767,9 @@ def scan(media_paths: list[Path], managed_files: set[str],
     all_files: list[Path] = []
     for base in media_paths:
         if not base.exists():
-            logging.warning(f"Media path not found: {base}")
+            logging.warning(_("Media path not found: {}").format(base))
             continue
-        logging.info(f"Scanning {base} ...")
+        logging.info(_("Scanning {} ...").format(base))
         all_files.extend(
             f for f in sorted(base.rglob("*"))
             if f.suffix.lower() in VIDEO_EXTENSIONS
@@ -777,11 +778,7 @@ def scan(media_paths: list[Path], managed_files: set[str],
 
     cached_count = sum(1 for f in all_files if cache and cache.get(f))
     fresh_count = len(all_files) - cached_count
-    logging.info(
-        f"Found {len(all_files)} video files — "
-        f"{cached_count} cached, {fresh_count} to probe — "
-        f"{workers} workers..."
-    )
+    logging.info(_("Found {} video files — {} cached, {} to probe — {} workers...").format(len(all_files), cached_count, fresh_count, workers))
 
     results: dict[Path, VideoFile] = {}
     done = 0
@@ -795,7 +792,7 @@ def scan(media_paths: list[Path], managed_files: set[str],
             results[vf.path] = vf
             done += 1
             if done % 200 == 0:
-                logging.info(f"  Probed {done}/{len(all_files)} files...")
+                logging.info(_("Probed {}/{} files...").format(done, len(all_files)))
 
     if cache:
         cache.purge_stale(set(all_files), media_paths)
@@ -880,7 +877,7 @@ def transcode_file(vf: VideoFile, profile: EncoderProfile,
 
     dst = src.with_name(new_stem + ".mkv")
 
-    logging.info(f"Transcoding: {src.name}")
+    logging.info(_("Transcoding: {}").format(src.name))
     logging.info(f"  Codec: {vf.codec} → {profile.codec.upper()} | "
                  f"Size: {vf.size_mb:.0f} MB | "
                  f"Resolution: {vf.height}p"
@@ -952,7 +949,7 @@ def transcode_file(vf: VideoFile, profile: EncoderProfile,
             return False
 
         if not tmp.exists():
-            logging.error("Output file not created.")
+            logging.error(_("Output file not created."))
             tmp.unlink(missing_ok=True)
             return False
 
@@ -981,20 +978,17 @@ def transcode_file(vf: VideoFile, profile: EncoderProfile,
         os.replace(tmp, dst)
 
         reduction = (1 - ratio) * 100
-        logging.info(
-            f"  Done in {elapsed:.0f}s: {vf.size_mb:.0f} MB → "
-            f"{new_size_mb:.0f} MB ({reduction:.0f}% reduction)"
-        )
+        logging.info(_("Done in {}s: {} MB → {} MB ({}% reduction)").format(int(elapsed), int(vf.size_mb), int(new_size_mb), int(reduction)))
 
         record_transcode(ledger_path, str(src), str(dst), vf.size_mb, new_size_mb)
         return True
 
     except subprocess.TimeoutExpired:
-        logging.error(f"ffmpeg timed out for {src}")
+        logging.error(_("ffmpeg timed out for {}").format(src))
         tmp.unlink(missing_ok=True)
         return False
     except Exception as e:
-        logging.error(f"Unexpected error: {e}")
+        logging.error(_("Unexpected error: {}").format(e))
         tmp.unlink(missing_ok=True)
         return False
 
@@ -1096,7 +1090,7 @@ def _run_with_progress(target: list, profile, ledger_path: Path,
         if interrupted[0]:
             return  # ignore repeated signals
         interrupted[0] = True
-        console.print("\n[yellow]Interrupt received — stopping active jobs...[/]")
+        console.print(_("Interrupt received — stopping active jobs..."))
         for proc in active_procs:
             try:
                 proc.terminate()
@@ -1118,7 +1112,7 @@ def _run_with_progress(target: list, profile, ledger_path: Path,
                     try:
                         future.result()
                     except Exception as e:
-                        logging.error(f"Worker error: {e}")
+                        logging.error(_("Worker error: {}").format(e))
                         failed[0] += 1
     finally:
         signal.signal(signal.SIGINT, old_handler)
@@ -1160,20 +1154,20 @@ def run_scan(cfg: dict, managed_files: set[str], profile: EncoderProfile):
     total_size = sum(v.size_mb for v in queue)
 
     logging.info("\n" + "=" * 60)
-    logging.info(f"Scan complete:")
-    logging.info(f"  Total video files : {len(all_files)}")
-    logging.info(f"  To transcode      : {len(queue)}")
-    logging.info(f"  Total size        : {total_size / 1024:.1f} GB")
-    logging.info(f"  Skipped           : {len(skipped)}")
+    logging.info(_("Scan complete:"))
+    logging.info(_("Total video files : {}").format(len(all_files)))
+    logging.info(_("To transcode      : {}").format(len(queue)))
+    logging.info(_("Total size        : {} GB").format(f"{total_size / 1024:.1f}"))
+    logging.info(_("Skipped           : {}").format(len(skipped)))
     for reason, count in sorted(skip_reasons.items(), key=lambda x: -x[1]):
         logging.info(f"    - {reason}: {count}")
     logging.info("=" * 60)
 
-    logging.info("\nQueue (first 20):")
+    logging.info(_("Queue (first 20):"))
     for vf in queue[:20]:
         logging.info(f"  [{vf.codec.upper():6}] {vf.size_mb:>7.0f} MB | {vf.path.name}")
     if len(queue) > 20:
-        logging.info(f"  ... and {len(queue) - 20} more")
+        logging.info(_("... and {} more").format(len(queue) - 20))
 
 
 def run_transcode(cfg: dict, managed_files: set[str], profile: EncoderProfile,
@@ -1198,7 +1192,7 @@ def run_transcode(cfg: dict, managed_files: set[str], profile: EncoderProfile,
     queue = filter_queue(all_files, profile, cfg.get("encoder", {}))
 
     total_size = sum(v.size_mb for v in queue)
-    logging.info(f"\nQueue: {len(queue)} files, {total_size / 1024:.1f} GB to process")
+    logging.info(_("Queue: {} files, {} GB to process").format(len(queue), f"{total_size / 1024:.1f}"))
 
     if dry_run:
         logging.info("\n[DRY RUN] Files that would be transcoded:")
@@ -1217,7 +1211,7 @@ def run_transcode(cfg: dict, managed_files: set[str], profile: EncoderProfile,
 
     use_progress = cfg.get("display", {}).get("progress_bars", True) and RICH_AVAILABLE
 
-    logging.info(f"Starting transcode: {len(target)} files, {parallel} parallel job(s)")
+    logging.info(_("Starting transcode: {} files, {} parallel job(s)").format(len(target), parallel))
 
     if use_progress:
         _run_with_progress(target, profile, ledger_path, parallel,
@@ -1261,10 +1255,10 @@ def run_transcode(cfg: dict, managed_files: set[str], profile: EncoderProfile,
                         else:
                             failed += 1
                     except Exception as e:
-                        logging.error(f"Worker error: {e}")
+                        logging.error(_("Worker error: {}").format(e))
                         failed += 1
 
-    logging.info(f"\nPipeline complete: {success} transcoded, {failed} failed")
+    logging.info(_("Pipeline complete: {} transcoded, {} failed").format(success, failed))
 
     if success > 0:
         _run_post_transcode_hooks(cfg)
@@ -1286,7 +1280,7 @@ def _run_post_transcode_hooks(cfg: dict):
                 timeout=10,
             )
             if resp.ok:
-                logging.info("Post-transcode: Plex library refresh triggered")
+                logging.info(_("Post-transcode: Plex library refresh triggered"))
             else:
                 logging.warning(f"Post-transcode: Plex refresh failed ({resp.status_code})")
         except Exception as e:
@@ -1302,7 +1296,7 @@ def _run_post_transcode_hooks(cfg: dict):
                 timeout=10,
             )
             if resp.ok:
-                logging.info("Post-transcode: Jellyfin library refresh triggered")
+                logging.info(_("Post-transcode: Jellyfin library refresh triggered"))
             else:
                 logging.warning(f"Post-transcode: Jellyfin refresh failed ({resp.status_code})")
         except Exception as e:
@@ -1314,14 +1308,14 @@ def run_status(cfg: dict):
     ledger = load_ledger(ledger_path)
 
     if not ledger:
-        logging.info("Ledger is empty — no files transcoded yet.")
+        logging.info(_("Ledger is empty — no files transcoded yet."))
         return
 
     total_original = sum(e["original_mb"] for e in ledger)
     total_transcoded = sum(e["transcoded_mb"] for e in ledger)
     saved = total_original - total_transcoded
 
-    logging.info(f"\nTorrchive status — {len(ledger)} files transcoded")
+    logging.info(_("Torrchive status — {} files transcoded").format(len(ledger)))
     logging.info(f"  Original size  : {total_original / 1024:.1f} GB")
     logging.info(f"  Current size   : {total_transcoded / 1024:.1f} GB")
     logging.info(f"  Space saved    : {saved / 1024:.1f} GB ({saved / total_original:.0%})")
@@ -1374,6 +1368,10 @@ Examples:
 
     cfg = load_config(args.config)
 
+    # Set up translations before any output
+    import builtins
+    builtins._ = setup_i18n(cfg.get("language", "fr"))
+
     log_file = cfg.get("log_file")
     setup_logging(Path(log_file) if log_file else None)
 
@@ -1388,11 +1386,7 @@ Examples:
     managed_files = client.get_managed_files()
 
     profile = build_encoder_profile(cfg.get("encoder", {}))
-    logging.info(
-        f"Encoder: {profile.backend} / {profile.codec.upper()} / "
-        f"quality {profile.quality} / preset {profile.preset}"
-        + (f" / max {profile.max_resolution}p" if profile.max_resolution else "")
-    )
+    logging.info(_("Encoder: {} / {} / quality {} / preset {}").format(profile.backend, profile.codec.upper(), profile.quality, profile.preset) + (f" / max {profile.max_resolution}p" if profile.max_resolution else ""))
 
     # --library CLI override: filter configured paths by their last component name
     if args.library:
@@ -1403,15 +1397,14 @@ Examples:
             if matches:
                 resolved.extend(str(p) for p in matches)
             else:
-                logging.warning(f"Library '{lib}' not found in configured media paths")
+                logging.warning(_("Library '{}' not found in configured media paths").format(lib))
         if resolved:
             cfg = dict(cfg)
             cfg["media"] = dict(cfg["media"])
             cfg["media"]["paths"] = resolved
-            logging.info(f"Library override: {resolved}")
+            logging.info(_("Library override: {}").format(resolved))
         else:
-            logging.error(f"No matching libraries found for: {args.library}. "
-                         f"Available: {[p.name for p in all_paths]}")
+            logging.error(_("No matching libraries found for: {}. Available: {}").format(args.library, [p.name for p in all_paths]))
             sys.exit(1)
 
     if args.mode == "scan":

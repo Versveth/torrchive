@@ -1,0 +1,193 @@
+# Torrchive — English translations
+# https://github.com/Versveth/torrchive
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: en\n"
+
+msgid "Torrchive v{} — mode: {}"
+msgstr "Torrchive v{} — mode: {}"
+
+msgid "qBittorrent: authenticated"
+msgstr "qBittorrent: authenticated"
+
+msgid "qBittorrent: {} files across {} torrents (all states)"
+msgstr "qBittorrent: {} files across {} torrents (all states)"
+
+msgid "Deluge: authenticated"
+msgstr "Deluge: authenticated"
+
+msgid "Deluge: {} managed files"
+msgstr "Deluge: {} managed files"
+
+msgid "Transmission: {} managed files"
+msgstr "Transmission: {} managed files"
+
+msgid "Torrent client: none — all files eligible"
+msgstr "Torrent client: none — all files eligible"
+
+msgid "Encoder: auto-detected {}"
+msgstr "Encoder: auto-detected {}"
+
+msgid "Encoder: falling back to software (libx265)"
+msgstr "Encoder: falling back to software (libx265)"
+
+msgid "Encoder: {} / {} / quality {} / preset {}"
+msgstr "Encoder: {} / {} / quality {} / preset {}"
+
+msgid "Library override: {}"
+msgstr "Library override: {}"
+
+msgid "Library '{}' not found in configured media paths"
+msgstr "Library '{}' not found in configured media paths"
+
+msgid "No matching libraries found for: {}. Available: {}"
+msgstr "No matching libraries found for: {}. Available: {}"
+
+msgid "Media path not found: {}"
+msgstr "Media path not found: {}"
+
+msgid "Probe cache: loaded {} entries from {}"
+msgstr "Probe cache: loaded {} entries from {}"
+
+msgid "Probe cache: failed to load ({}), starting fresh"
+msgstr "Probe cache: failed to load ({}), starting fresh"
+
+msgid "Probe cache: saved {} entries to {}"
+msgstr "Probe cache: saved {} entries to {}"
+
+msgid "Probe cache: purged {} stale entries"
+msgstr "Probe cache: purged {} stale entries"
+
+msgid "Startup cleanup: removed {} leftover temp file(s)"
+msgstr "Startup cleanup: removed {} leftover temp file(s)"
+
+msgid "Scanning {} ..."
+msgstr "Scanning {} ..."
+
+msgid "Found {} video files — {} cached, {} to probe — {} workers..."
+msgstr "Found {} video files — {} cached, {} to probe — {} workers..."
+
+msgid "Probed {}/{} files..."
+msgstr "Probed {}/{} files..."
+
+msgid "Scan complete:"
+msgstr "Scan complete:"
+
+msgid "Total video files : {}"
+msgstr "Total video files : {}"
+
+msgid "To transcode      : {}"
+msgstr "To transcode      : {}"
+
+msgid "Total size        : {} GB"
+msgstr "Total size        : {} GB"
+
+msgid "Skipped           : {}"
+msgstr "Skipped           : {}"
+
+msgid "Queue (first 20):"
+msgstr "Queue (first 20):"
+
+msgid "... and {} more"
+msgstr "... and {} more"
+
+msgid "Queue: {} files, {} GB to process"
+msgstr "Queue: {} files, {} GB to process"
+
+msgid "Starting transcode: {} files, {} parallel job(s)"
+msgstr "Starting transcode: {} files, {} parallel job(s)"
+
+msgid "Transcoding: {}"
+msgstr "Transcoding: {}"
+
+msgid "Codec: {} → {} | Size: {} MB | Resolution: {}p"
+msgstr "Codec: {} → {} | Size: {} MB | Resolution: {}p"
+
+msgid "Filename: {} → {}"
+msgstr "Filename: {} → {}"
+
+msgid "Done in {}s: {} MB → {} MB ({}% reduction)"
+msgstr "Done in {}s: {} MB → {} MB ({}% reduction)"
+
+msgid "Output suspiciously small ({} MB, {}). Aborting."
+msgstr "Output suspiciously small ({} MB, {}). Aborting."
+
+msgid "Output file not created."
+msgstr "Output file not created."
+
+msgid "Output codec is {}, expected {}. Aborting."
+msgstr "Output codec is {}, expected {}. Aborting."
+
+msgid "ffmpeg timed out for {}"
+msgstr "ffmpeg timed out for {}"
+
+msgid "ffmpeg failed: {}"
+msgstr "ffmpeg failed: {}"
+
+msgid "Unexpected error: {}"
+msgstr "Unexpected error: {}"
+
+msgid "Worker error: {}"
+msgstr "Worker error: {}"
+
+msgid "Pipeline complete: {} transcoded, {} failed"
+msgstr "Pipeline complete: {} transcoded, {} failed"
+
+msgid "Post-transcode: Plex library refresh triggered"
+msgstr "Post-transcode: Plex library refresh triggered"
+
+msgid "Post-transcode: Plex refresh failed ({})"
+msgstr "Post-transcode: Plex refresh failed ({})"
+
+msgid "Post-transcode: Plex refresh error: {}"
+msgstr "Post-transcode: Plex refresh error: {}"
+
+msgid "Post-transcode: Jellyfin library refresh triggered"
+msgstr "Post-transcode: Jellyfin library refresh triggered"
+
+msgid "Post-transcode: Jellyfin refresh failed ({})"
+msgstr "Post-transcode: Jellyfin refresh failed ({})"
+
+msgid "Post-transcode: Jellyfin refresh error: {}"
+msgstr "Post-transcode: Jellyfin refresh error: {}"
+
+msgid "Ledger is empty — no files transcoded yet."
+msgstr "Ledger is empty — no files transcoded yet."
+
+msgid "Torrchive status — {} files transcoded"
+msgstr "Torrchive status — {} files transcoded"
+
+msgid "Original size  : {} GB"
+msgstr "Original size  : {} GB"
+
+msgid "Current size   : {} GB"
+msgstr "Current size   : {} GB"
+
+msgid "Space saved    : {} GB ({}%)"
+msgstr "Space saved    : {} GB ({}%)"
+
+msgid "Interrupt received — stopping active jobs..."
+msgstr "Interrupt received — stopping active jobs..."
+
+msgid "Done: {} transcoded, {} failed"
+msgstr "Done: {} transcoded, {} failed"
+
+msgid "Found {} incomplete temp file(s)."
+msgstr "Found {} incomplete temp file(s)."
+
+msgid "Delete them? [y/N] "
+msgstr "Delete them? [y/N] "
+
+msgid "Temp files deleted."
+msgstr "Temp files deleted."
+
+msgid "Temp files kept."
+msgstr "Temp files kept."
+
+msgid "Overall"
+msgstr "Overall"
+
+msgid "Saved: {} GB"
+msgstr "Saved: {} GB"
