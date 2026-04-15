@@ -841,7 +841,8 @@ def filter_queue(files: list[VideoFile], profile: EncoderProfile,
 
 def transcode_file(vf: VideoFile, profile: EncoderProfile,
                    ledger_path: Path,
-                   progress_callback=None) -> bool:
+                   progress_callback=None,
+                   proc_registry: Optional[list] = None) -> bool:
     src = vf.path
 
     # Always output MKV — avoids MP4 container restrictions with HEVC
@@ -882,6 +883,8 @@ def transcode_file(vf: VideoFile, profile: EncoderProfile,
                 encoding="utf-8",
                 errors="replace",
             )
+            if proc_registry is not None:
+                proc_registry.append(proc)
             stderr_lines = []
             frame_re = re.compile(r"frame=\s*(\d+)")
             try:
@@ -901,6 +904,8 @@ def transcode_file(vf: VideoFile, profile: EncoderProfile,
                             progress_callback(pct)
             finally:
                 proc.wait()
+                if proc_registry is not None and proc in proc_registry:
+                    proc_registry.remove(proc)
             stderr_out = "".join(stderr_lines[-20:])
             returncode = proc.returncode
         else:
@@ -1032,7 +1037,7 @@ def _run_with_progress(target: list, profile, ledger_path: Path,
         def _progress_cb(pct: float):
             job_progress.update(job_id, completed=int(pct * 100))
 
-        ok = transcode_file(vf, profile, ledger_path, progress_callback=_progress_cb)
+        ok = transcode_file(vf, profile, ledger_path, progress_callback=_progress_cb, proc_registry=active_procs)
 
         job_progress.update(job_id, completed=100)
         job_progress.stop_task(job_id)
@@ -1060,9 +1065,16 @@ def _run_with_progress(target: list, profile, ledger_path: Path,
     table.add_row(job_progress)
 
     interrupted = [False]
+    active_procs: list = []
 
     def _handle_interrupt(sig, frame):
         interrupted[0] = True
+        console.print("\n[yellow]Interrupt received — stopping after current jobs...[/]")
+        for proc in active_procs:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
 
     old_handler = signal.signal(signal.SIGINT, _handle_interrupt)
 
@@ -1073,6 +1085,8 @@ def _run_with_progress(target: list, profile, ledger_path: Path,
                            for i, vf in enumerate(target)}
                 for future in as_completed(futures):
                     if interrupted[0]:
+                        for f in futures:
+                            f.cancel()
                         break
                     try:
                         future.result()
