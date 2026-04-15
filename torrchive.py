@@ -451,7 +451,7 @@ def build_ffmpeg_cmd(src: Path, dst: Path, profile: EncoderProfile,
                 f"scale=-2:{profile.max_resolution}:flags=lanczos"
             )
 
-    cmd = ["ffmpeg", "-y", *hwaccel, "-fflags", "+genpts", "-i", str(src), "-max_muxing_queue_size", "9999"]
+    cmd = ["ffmpeg", "-y", *hwaccel, "-fflags", "+genpts", "-stats_period", "1", "-i", str(src), "-max_muxing_queue_size", "9999"]
 
     if vf_filters:
         cmd += ["-vf", ",".join(vf_filters)]
@@ -538,15 +538,24 @@ class VideoFile:
 
 
 def get_video_duration(path: Path) -> float:
-    """Return duration in seconds, 0 on failure."""
+    """Return duration in seconds, 0 on failure. Checks both format and stream level."""
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
-             "-show_entries", "format=duration", "-of", "json", str(path)],
+            ["ffprobe", "-v", "quiet",
+             "-show_entries", "format=duration:stream=duration",
+             "-of", "json", str(path)],
             capture_output=True, text=True, timeout=30,
         )
         data = json.loads(result.stdout)
-        return float(data.get("format", {}).get("duration", 0))
+        # Try format level first, then fall back to first stream
+        d = data.get("format", {}).get("duration")
+        if not d:
+            streams = data.get("streams", [])
+            for s in streams:
+                d = s.get("duration")
+                if d:
+                    break
+        return float(d) if d else 0.0
     except Exception:
         return 0.0
 
@@ -909,13 +918,13 @@ def transcode_file(vf: VideoFile, profile: EncoderProfile,
                         # Estimate progress from fps * duration
                         pass
                     if "time=" in line:
-                        # Parse time=HH:MM:SS.ss
-                        t_match = re.search(r"time=(\d+):(\d+):([\d.]+)", line)
+                        t_match = re.search(r"time=(-?)(\d+):(\d+):([\d.]+)", line)
                         if t_match:
-                            h, m_, s = t_match.groups()
-                            elapsed_enc = int(h)*3600 + int(m_)*60 + float(s)
-                            pct = min(elapsed_enc / duration, 1.0) if duration else 0
-                            progress_callback(pct)
+                            neg, h, m_, s = t_match.groups()
+                            if not neg:
+                                elapsed_enc = int(h)*3600 + int(m_)*60 + float(s)
+                                pct = min(elapsed_enc / duration, 1.0) if duration else 0
+                                progress_callback(pct)
             finally:
                 proc.wait()
                 if proc_registry is not None and proc in proc_registry:
