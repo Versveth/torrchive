@@ -9,6 +9,7 @@
 </div>
 
 [![Ko-fi](https://img.shields.io/badge/Soutenir-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/versveth)
+[![Changelog](https://img.shields.io/badge/Changelog-0.1.1-blue)](CHANGELOG.md)
 
 **Torrchive** transcode les fichiers média que vous ne seedez plus vers des formats optimisés, en les conservant dans votre bibliothèque Plex ou Jellyfin à une fraction de leur taille d'origine.
 
@@ -240,6 +241,7 @@ SOFTWARE.
 # Torrchive
 
 [![Ko-fi](https://img.shields.io/badge/Support-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/versveth)
+[![Changelog](https://img.shields.io/badge/Changelog-0.1.1-blue)](CHANGELOG.md)
 
 **Torrchive** transcodes media files you're no longer seeding into space-efficient formats, keeping them alive in your Plex or Jellyfin library at a fraction of their original size.
 
