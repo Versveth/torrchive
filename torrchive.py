@@ -1012,6 +1012,12 @@ def _run_with_progress(target: list, profile, ledger_path: Path,
     # Track tmp files for cleanup prompt
     tmp_files: list[Path] = []
 
+    # Redirect logging through rich console to avoid corrupting live display
+    from rich.logging import RichHandler
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    logging.root.addHandler(RichHandler(console=console, show_path=False, show_time=True))
+
     overall_progress = Progress(
         TextColumn("[bold blue]Overall"),
         BarColumn(bar_width=40),
@@ -1056,7 +1062,7 @@ def _run_with_progress(target: list, profile, ledger_path: Path,
 
         ok = transcode_file(vf, profile, ledger_path, progress_callback=_progress_cb, proc_registry=active_procs)
 
-        job_progress.update(job_id, completed=100)
+        job_progress.update(job_id, completed=100, visible=False)
         job_progress.stop_task(job_id)
         job_progress.remove_task(job_id)
 
@@ -1116,6 +1122,10 @@ def _run_with_progress(target: list, profile, ledger_path: Path,
                         failed[0] += 1
     finally:
         signal.signal(signal.SIGINT, old_handler)
+        # Restore standard logging
+        for handler in logging.root.handlers[:]:
+            logging.root.removeHandler(handler)
+        setup_logging(None)
 
     console.print(f"\n[bold green]Done:[/] {success[0]} transcoded, "
                   f"[red]{failed[0]} failed[/]")
