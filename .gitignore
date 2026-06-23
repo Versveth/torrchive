@@ -4,3 +4,9 @@ torrchive_probe_cache.json
 torrchive.log
 __pycache__/
 *.pyc
+.venv/
+nohup.out
+locales/**/*.mo
+hevc_recompress_*.md
+probe_report_*.md
+columbo_hevc_batch.sh

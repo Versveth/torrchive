@@ -7,6 +7,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- **Interactive setup wizard** (`torrchive.py setup`) — bilingual (FR/EN) first-run wizard that configures media paths, torrent client, encoder, codec/quality, schedule, and output paths
+- **Guided menu** — launched when running `torrchive.py` with no arguments; presents numbered options for scan / run / run library / status / setup / quit
+- **`--background` flag** — disables Rich progress bars for nohup/systemd runs without a config file edit
+- **Thunderbolt eGPU auto-detect** — `hwaccel: auto` in config disables hardware decode automatically when an authorized TB device is found under `/sys/bus/thunderbolt/devices`; `hwaccel: true` always enables it (correct for native PCIe)
+- **`probe_stats.py`** — standalone tool to analyse the probe cache and generate a Markdown report by codec
+- **`parse_and_schedule.py`** — converts a probe Markdown report into a prioritised ffmpeg batch script
+
+### Fixed
+- **qBittorrent 5.0+ login** — now accepts HTTP 204 (empty body) as a valid login response in addition to HTTP 200 "Ok." (legacy)
+- **`--parallel` CLI default** — changed from 1 to 0 (unset); 0 now correctly falls back to `performance.parallel` in config instead of silently overriding it
+
 ---
 
 ## [0.1.1] - 2026-04-15
