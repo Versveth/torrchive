@@ -1331,7 +1331,8 @@ def run_scan(cfg: dict, managed_files: set[str], profile: EncoderProfile):
 
 
 def run_transcode(cfg: dict, managed_files: set[str], profile: EncoderProfile,
-                  dry_run: bool, limit: int, no_schedule: bool, parallel: int = 1):
+                  dry_run: bool, limit: int, no_schedule: bool, parallel: int = 1,
+                  background: bool = False):
     media_paths = [Path(p) for p in cfg["media"]["paths"]]
     min_size = float(cfg["media"].get("min_size_mb", 100))
     workers = int(cfg.get("performance", {}).get("scan_workers", 16))
@@ -1361,15 +1362,19 @@ def run_transcode(cfg: dict, managed_files: set[str], profile: EncoderProfile,
         return
 
     target = queue[:limit] if limit > 0 else queue
-    # CLI --parallel overrides config value
-    if parallel == 1:
+    # 0 = not explicitly set — fall back to config value
+    if parallel == 0:
         parallel = cfg_parallel
     parallel = max(1, parallel)
     success = 0
     failed = 0
     saved_mb = 0.0
 
-    use_progress = cfg.get("display", {}).get("progress_bars", True) and RICH_AVAILABLE
+    # --background flag overrides config display setting
+    if background:
+        use_progress = False
+    else:
+        use_progress = cfg.get("display", {}).get("progress_bars", True) and RICH_AVAILABLE
 
     logging.info(tr("Starting transcode: {} files, {} parallel job(s)").format(len(target), parallel))
 
@@ -1510,10 +1515,13 @@ Examples:
                         help="Max files to transcode in this run (0 = unlimited)")
     parser.add_argument("--no-schedule", action="store_true",
                         help="Ignore schedule window, run immediately")
-    parser.add_argument("--parallel", type=int, default=1,
+    parser.add_argument("--parallel", type=int, default=0,
                         help="Concurrent transcode jobs (default: 1). "
                              "Tune to your NFS bandwidth and GPU capacity. "
                              "2-3 recommended for NVENC setups.")
+    parser.add_argument("--background", action="store_true",
+                        help="Disable progress bars for background/nohup runs. "
+                             "Equivalent to display.progress_bars: false in config.")
     parser.add_argument("--library", nargs="+", default=None,
                         help="Override config paths — scan specific library "
                              "subfolder(s) by name (e.g. --library Anime Films). "
