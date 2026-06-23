@@ -250,8 +250,11 @@ class QBittorrentClient(TorrentClient):
             data={"username": username, "password": password},
             timeout=10,
         )
-        if resp.text.strip() != "Ok.":
+        # qBittorrent <5.0 returns "Ok.", >=5.0 returns HTTP 204 with empty body
+        if resp.status_code == 200 and resp.text.strip() != "Ok.":
             raise RuntimeError(f"qBittorrent login failed: {resp.text}")
+        if resp.status_code not in (200, 204):
+            raise RuntimeError(f"qBittorrent login failed (HTTP {resp.status_code}): {resp.text}")
         logging.info(tr("qBittorrent: authenticated"))
 
     def get_managed_files(self) -> set[str]:
