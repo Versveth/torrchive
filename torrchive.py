@@ -432,6 +432,7 @@ class EncoderProfile:
     audio_bitrate: str
     audio_channels: int
     normalize_filename: bool
+    hwaccel: bool = True  # use hardware-accelerated decoding on input
 
 
 # Codec → encoder name per backend
@@ -466,6 +467,45 @@ PRESET_FLAG = {
     "videotoolbox": "-profile:v",
     "software": "-preset",
 }
+
+
+def _is_thunderbolt_egpu() -> bool:
+    """
+    Detect if the GPU is connected via Thunderbolt (eGPU).
+    On Linux, authorized TB devices appear under /sys/bus/thunderbolt/devices.
+    If any authorized TB device is present, assume the GPU may be on TB.
+    """
+    tb_path = Path("/sys/bus/thunderbolt/devices")
+    if not tb_path.exists():
+        return False
+    try:
+        for device in tb_path.iterdir():
+            authorized = device / "authorized"
+            if authorized.exists() and authorized.read_text().strip() == "1":
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _resolve_hwaccel(cfg_value: str, backend: str) -> bool:
+    """
+    Resolve hwaccel config value to a boolean.
+      auto  → enabled, but disabled automatically for Thunderbolt eGPUs
+              (TB3 bandwidth limitations make hwaccel decode unstable)
+      true  → always enabled
+      false → always disabled (CPU decoding — safer for eGPU setups)
+    """
+    val = str(cfg_value).lower()
+    if val == "false":
+        return False
+    if val == "true":
+        return True
+    # auto: disable for Thunderbolt eGPUs
+    if backend in ("nvenc", "vaapi") and _is_thunderbolt_egpu():
+        logging.info(tr("Encoder: Thunderbolt eGPU detected — disabling hwaccel decode for stability"))
+        return False
+    return True
 
 
 def detect_backend() -> str:
@@ -520,6 +560,11 @@ def build_encoder_profile(cfg: dict) -> EncoderProfile:
     except FileNotFoundError:
         raise RuntimeError("ffmpeg not found. Please install ffmpeg.")
 
+    hwaccel_cfg = str(cfg.get("hwaccel", "auto")).lower()
+    hwaccel = _resolve_hwaccel(hwaccel_cfg, backend)
+    if not hwaccel:
+        logging.info(tr("Encoder: hardware decode disabled — using CPU for decoding"))
+
     return EncoderProfile(
         backend=backend,
         codec=codec,
@@ -530,6 +575,7 @@ def build_encoder_profile(cfg: dict) -> EncoderProfile:
         audio_bitrate=cfg.get("audio_bitrate", "192k"),
         audio_channels=int(cfg.get("audio_channels", 2)),
         normalize_filename=cfg.get("normalize_filename", True),
+        hwaccel=hwaccel,
     )
 
 
@@ -537,7 +583,7 @@ def build_ffmpeg_cmd(src: Path, dst: Path, profile: EncoderProfile,
                      source_height: int) -> list[str]:
     codec_name = CODEC_MAP[profile.backend][profile.codec]
     quality_flags = QUALITY_FLAG[profile.backend] + [str(profile.quality)]
-    hwaccel = HWACCEL_FLAGS[profile.backend]
+    hwaccel_flags = HWACCEL_FLAGS[profile.backend] if profile.hwaccel else []
     preset_flag = PRESET_FLAG[profile.backend]
 
     # Resolution filter
@@ -552,7 +598,7 @@ def build_ffmpeg_cmd(src: Path, dst: Path, profile: EncoderProfile,
                 f"scale=-2:{profile.max_resolution}:flags=lanczos"
             )
 
-    cmd = ["ffmpeg", "-y", *hwaccel, "-fflags", "+genpts", "-stats_period", "1", "-i", str(src), "-max_muxing_queue_size", "9999"]
+    cmd = ["ffmpeg", "-y", *hwaccel_flags, "-fflags", "+genpts", "-stats_period", "1", "-i", str(src), "-max_muxing_queue_size", "9999"]
 
     if vf_filters:
         cmd += ["-vf", ",".join(vf_filters)]
