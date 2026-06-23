@@ -1503,9 +1503,9 @@ Examples:
   torrchive.py --config /path/config.yaml  # use alternate config file
 """,
     )
-    parser.add_argument("mode", nargs="?", default="scan",
-                        choices=["scan", "run", "status"],
-                        help="Operation mode (default: scan)")
+    parser.add_argument("mode", nargs="?", default=None,
+                        choices=["scan", "run", "status", "setup"],
+                        help="Operation mode — omit to launch interactive menu")
     parser.add_argument("--config", type=Path,
                         default=Path(__file__).parent / "config.yaml",
                         help="Path to config file (default: config.yaml next to script)")
@@ -1529,15 +1529,42 @@ Examples:
     parser.add_argument("--version", action="version", version=f"Torrchive {__version__}")
     args = parser.parse_args()
 
+    if args.mode == "setup":
+        run_setup(args.config)
+        return
+
     if not args.config.exists():
-        print(f"ERROR: Config file not found: {args.config}")
-        print(f"Copy config.example.yaml to config.yaml and edit it.")
+        print(f"No config.yaml found. Run: python3 torrchive.py setup")
+        print(f"Or copy config.example.yaml to config.yaml and edit it.")
         sys.exit(1)
 
     cfg = load_config(args.config)
 
     # Set up translations before any output
     tr.set(setup_i18n(cfg.get("language", "fr")))
+
+    # Interactive menu when launched with no arguments
+    if args.mode is None and not any([
+        args.dry_run, args.limit, args.no_schedule,
+        args.parallel > 1, args.library
+    ]):
+        mode, _, dry_run, no_schedule, parallel, libraries, background = run_guided_menu(cfg, args.config)
+        if mode == "setup":
+            run_setup(args.config)
+            return
+        args.mode = mode
+        if dry_run:
+            args.dry_run = True
+        if no_schedule:
+            args.no_schedule = True
+        if parallel > 1:
+            args.parallel = parallel
+        if libraries:
+            args.library = libraries
+        if background:
+            args.background = True
+    elif args.mode is None:
+        args.mode = "scan"
 
     log_file = cfg.get("log_file")
     setup_logging(Path(log_file) if log_file else None)
@@ -1581,7 +1608,595 @@ Examples:
                       dry_run=args.dry_run,
                       limit=args.limit,
                       no_schedule=args.no_schedule,
-                      parallel=args.parallel)
+                      parallel=args.parallel,
+                      background=args.background)
+
+
+# ─── Setup wizard ─────────────────────────────────────────────────────────────
+
+# Wizard strings in all supported languages (needed before translations load)
+_WIZARD_STRINGS = {
+    "fr": {
+        "lang_prompt":     "Choisissez votre langue / Select your language",
+        "welcome":         "Bienvenue dans Torrchive — Assistant de configuration",
+        "welcome_sub":     "Répondez aux questions suivantes pour créer votre config.yaml.",
+        "section_media":   "BIBLIOTHÈQUES MÉDIA",
+        "how_many_libs":   "Combien de bibliothèques voulez-vous configurer ?",
+        "lib_path":        "Chemin de la bibliothèque {}",
+        "path_ok":         "Chemin valide : {}",
+        "path_missing":    "Chemin introuvable : {}",
+        "nfs_detected":    "Ce chemin ressemble à un montage NFS. Est-il déjà monté ?",
+        "nfs_fstab":       "Pour monter automatiquement au démarrage, ajoutez à /etc/fstab :",
+        "nfs_fstab_entry": "{}:{} {} nfs4 soft,timeo=30,retrans=3,vers=4.1,_netdev 0 0",
+        "nfs_mount_now":   "Voulez-vous monter ce chemin maintenant (sudo mount -a) ?",
+        "nfs_mount_cmd":   "Lancez : sudo mount -a",
+        "add_another":     "Ajouter une autre bibliothèque ?",
+        "section_client":  "CLIENT TORRENT",
+        "client_type":     "Type de client torrent",
+        "client_url":      "URL du client (ex: http://192.168.1.1:8080)",
+        "client_user":     "Nom d'utilisateur",
+        "client_pass":     "Mot de passe",
+        "client_test":     "Test de connexion...",
+        "client_ok":       "Connexion réussie ({} fichiers gérés)",
+        "client_fail":     "Échec de connexion : {}",
+        "section_encoder": "ENCODEUR",
+        "detected":        "Détecté automatiquement : {}",
+        "confirm_encoder": "Utiliser {} comme backend d'encodage ?",
+        "encoder_choice":  "Choisissez un backend",
+        "section_codec":   "CODEC ET QUALITÉ",
+        "codec_choice":    "Codec cible",
+        "codec_hevc_desc": "HEVC (H.265) — meilleure compatibilité, recommandé",
+        "codec_av1_desc":  "AV1 — fichiers plus petits, clients récents uniquement",
+        "codec_h264_desc": "H.264 — compatibilité maximale, fichiers plus grands",
+        "quality_prompt":  "Valeur de qualité CQ/CRF (défaut: 26, plage recommandée: 22-28)",
+        "preset_prompt":   "Preset d'encodage (défaut: p6 pour NVENC, medium pour logiciel)",
+        "section_perf":    "PERFORMANCES",
+        "parallel_prompt": "Nombre de jobs parallèles (défaut: {})",
+        "parallel_hint":   "Conseil : commencez par {} et ajustez selon l'utilisation GPU",
+        "workers_prompt":  "Workers de scan parallèles (défaut: 16)",
+        "section_sched":   "PLANIFICATION",
+        "sched_enable":    "Activer une fenêtre horaire (ex: heures solaires) ?",
+        "sched_start":     "Heure de début (format HH:MM)",
+        "sched_stop":      "Heure de fin (format HH:MM)",
+        "section_paths":   "CHEMINS DE SORTIE",
+        "log_prompt":      "Fichier de log",
+        "ledger_prompt":   "Fichier de bilan (espace économisé)",
+        "cache_prompt":    "Fichier de cache de sonde",
+        "section_preview": "APERÇU DE LA CONFIGURATION",
+        "confirm_write":   "Écrire cette configuration dans {} ?",
+        "written":         "Configuration sauvegardée dans {}",
+        "run_scan":        "Lancer un scan maintenant pour vérifier ?",
+        "done":            "Configuration terminée. Lancez : python3 torrchive.py scan",
+        "press_enter_retry": "Montez le chemin puis appuyez sur Entrée pour réessayer...",
+        "mounts_available":  "Chemins montés disponibles :",
+        "mount_manual":      "Entrer un chemin manuellement",
+        "mount_select":      "Sélectionnez une bibliothèque",
+        "no_mounts":         "Aucun montage détecté. Entrez le chemin manuellement.",
+        "existing_config":   "Un fichier config.yaml existe déjà. Écraser ?",
+        "menu_title":        "Que souhaitez-vous faire ?",
+        "menu_scan":         "Scanner la bibliothèque (aperçu sans modification)",
+        "menu_run":          "Lancer le transcodage",
+        "menu_run_lib":      "Lancer le transcodage sur une bibliothèque spécifique",
+        "menu_status":       "Afficher l'espace économisé",
+        "menu_setup":        "Reconfigurer Torrchive",
+        "menu_quit":         "Quitter",
+        "menu_choice":       "Votre choix",
+        "menu_lib_choice":   "Bibliothèque",
+        "menu_parallel":     "Nombre de jobs parallèles",
+        "menu_schedule":     "Respecter la fenêtre horaire configurée",
+        "menu_dry_run":      "Simulation uniquement (aucun fichier modifié)",
+        "menu_bg_title":     "Mode d'exécution",
+        "menu_fg":           "Interactif — barres de progression (fermer le terminal arrête le processus)",
+        "menu_bg":           "Arrière-plan — logs seuls (résiste à la fermeture du terminal)",
+        "menu_bg_choice":    "Mode d'exécution",
+        "menu_bg_warn":      "Attention : fermer cette fenêtre ou perdre la connexion SSH arrêtera le transcodage.",
+        "menu_bg_cmd":       "Pour lancer en arrière-plan sans risque, utilisez :",
+        "hwaccel_auto":      "Décodage matériel : auto (désactivé si eGPU Thunderbolt détecté)",
+        "hwaccel_prompt":    "Décodage matériel sur l'entrée (auto/true/false)",
+        "tb_detected":       "eGPU Thunderbolt détecté — décodage matériel désactivé pour la stabilité",
+        "hwaccel_disabled":  "Décodage matériel désactivé — décodage CPU utilisé",
+        "skip":            "Ignorer / conserver la valeur par défaut",
+        "yes": "oui", "no": "non",
+    },
+    "en": {
+        "lang_prompt":     "Select your language / Choisissez votre langue",
+        "welcome":         "Welcome to Torrchive — Setup Wizard",
+        "welcome_sub":     "Answer the following questions to create your config.yaml.",
+        "section_media":   "MEDIA LIBRARIES",
+        "how_many_libs":   "How many libraries do you want to configure?",
+        "lib_path":        "Path for library {}",
+        "path_ok":         "Valid path: {}",
+        "path_missing":    "Path not found: {}",
+        "nfs_detected":    "This path looks like an NFS mount. Is it already mounted?",
+        "nfs_fstab":       "To mount automatically at boot, add to /etc/fstab:",
+        "nfs_fstab_entry": "{}:{} {} nfs4 soft,timeo=30,retrans=3,vers=4.1,_netdev 0 0",
+        "nfs_mount_now":   "Mount this path now (sudo mount -a)?",
+        "nfs_mount_cmd":   "Run: sudo mount -a",
+        "add_another":     "Add another library?",
+        "section_client":  "TORRENT CLIENT",
+        "client_type":     "Torrent client type",
+        "client_url":      "Client URL (e.g. http://192.168.1.1:8080)",
+        "client_user":     "Username",
+        "client_pass":     "Password",
+        "client_test":     "Testing connection...",
+        "client_ok":       "Connection successful ({} managed files)",
+        "client_fail":     "Connection failed: {}",
+        "section_encoder": "ENCODER",
+        "detected":        "Auto-detected: {}",
+        "confirm_encoder": "Use {} as encoding backend?",
+        "encoder_choice":  "Choose a backend",
+        "section_codec":   "CODEC AND QUALITY",
+        "codec_choice":    "Target codec",
+        "codec_hevc_desc": "HEVC (H.265) — best compatibility, recommended",
+        "codec_av1_desc":  "AV1 — smallest files, modern clients only",
+        "codec_h264_desc": "H.264 — maximum compatibility, larger files",
+        "quality_prompt":  "Quality value CQ/CRF (default: 26, recommended range: 22-28)",
+        "preset_prompt":   "Encoding preset (default: p6 for NVENC, medium for software)",
+        "section_perf":    "PERFORMANCE",
+        "parallel_prompt": "Number of parallel jobs (default: {})",
+        "parallel_hint":   "Tip: start with {} and adjust based on GPU usage",
+        "workers_prompt":  "Parallel scan workers (default: 16)",
+        "section_sched":   "SCHEDULE",
+        "sched_enable":    "Enable a time window (e.g. solar hours)?",
+        "sched_start":     "Start time (HH:MM format)",
+        "sched_stop":      "Stop time (HH:MM format)",
+        "section_paths":   "OUTPUT PATHS",
+        "log_prompt":      "Log file",
+        "ledger_prompt":   "Ledger file (space savings)",
+        "cache_prompt":    "Probe cache file",
+        "section_preview": "CONFIGURATION PREVIEW",
+        "confirm_write":   "Write this configuration to {}?",
+        "written":         "Configuration saved to {}",
+        "run_scan":        "Run a scan now to verify?",
+        "done":            "Setup complete. Run: python3 torrchive.py scan",
+        "press_enter_retry": "Mount the path then press Enter to retry...",
+        "mounts_available":  "Available mounted paths:",
+        "mount_manual":      "Enter path manually",
+        "mount_select":      "Select a library",
+        "no_mounts":         "No mounts detected. Enter path manually.",
+        "existing_config":   "A config.yaml already exists. Overwrite?",
+        "menu_title":        "What would you like to do?",
+        "menu_scan":         "Scan library (preview, no changes)",
+        "menu_run":          "Run transcoding",
+        "menu_run_lib":      "Run transcoding on a specific library",
+        "menu_status":       "Show space savings",
+        "menu_setup":        "Reconfigure Torrchive",
+        "menu_quit":         "Quit",
+        "menu_choice":       "Your choice",
+        "menu_lib_choice":   "Library",
+        "menu_parallel":     "Number of parallel jobs",
+        "menu_schedule":     "Respect configured schedule window",
+        "menu_dry_run":      "Dry run only (no files modified)",
+        "menu_bg_title":     "Execution mode",
+        "menu_fg":           "Interactive — progress bars (closing terminal stops the process)",
+        "menu_bg":           "Background — log only (survives terminal close)",
+        "menu_bg_choice":    "Execution mode",
+        "menu_bg_warn":      "Warning: closing this window or losing the SSH session will stop transcoding.",
+        "menu_bg_cmd":       "To run safely in the background, use:",
+        "hwaccel_auto":      "Hardware decode: auto (disabled if Thunderbolt eGPU detected)",
+        "hwaccel_prompt":    "Hardware decode on input (auto/true/false)",
+        "tb_detected":       "Thunderbolt eGPU detected — disabling hwaccel decode for stability",
+        "hwaccel_disabled":  "Hardware decode disabled — using CPU for decoding",
+        "skip":            "Skip / keep default",
+        "yes": "yes", "no": "no",
+    },
+}
+
+
+def _w(lang: str, key: str, *args) -> str:
+    """Get wizard string for given language, optionally formatted."""
+    s = _WIZARD_STRINGS.get(lang, _WIZARD_STRINGS["fr"]).get(key, key)
+    return s.format(*args) if args else s
+
+
+def _section(console, lang: str, key: str):
+    console.print(f"\n[bold cyan]── {_w(lang, key)} ──[/]")
+
+
+def _prompt(console, lang: str, key: str, default: str = "", *args) -> str:
+    label = _w(lang, key, *args)
+    if default:
+        label += f" [{default}]"
+    console.print(f"[yellow]{label}:[/] ", end="")
+    val = input().strip()
+    return val if val else default
+
+
+def _confirm(console, lang: str, key: str, default: bool = True) -> bool:
+    yes = _w(lang, "yes")[0].lower()
+    no = _w(lang, "no")[0].lower()
+    hint_yes = yes.upper() if default else yes
+    hint_no = no if default else no.upper()
+    console.print(f"[yellow]{_w(lang, key)}[/yellow] [{hint_yes}/{hint_no}]: ", end="")
+    val = input().strip().lower()
+    if not val:
+        return default
+    return val.startswith(yes)
+
+
+def _get_mounted_paths() -> list[str]:
+    """
+    Return list of mounted paths that look like media directories.
+    Excludes system mounts (/, /boot, /sys, /proc, /dev, /run, /tmp etc.)
+    """
+    skip_prefixes = ("/sys", "/proc", "/dev", "/run", "/tmp", "/boot",
+                     "/snap", "/var/lib", "/usr", "/home")
+    found = []
+    try:
+        with open("/proc/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                mount_point = parts[1]
+                if mount_point == "/":
+                    continue
+                if any(mount_point.startswith(p) for p in skip_prefixes):
+                    continue
+                if mount_point not in found:
+                    found.append(mount_point)
+    except Exception:
+        pass
+    return sorted(found)
+
+
+def _detect_nfs_server(path: str) -> tuple[str, str] | None:
+    """
+    Check /proc/mounts to see if path is already an NFS mount.
+    Returns (server, export) or None.
+    """
+    try:
+        with open("/proc/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 3 and parts[1] == path and "nfs" in parts[2]:
+                    server_export = parts[0]
+                    if ":" in server_export:
+                        server, export = server_export.split(":", 1)
+                        return server, export
+    except Exception:
+        pass
+    return None
+
+
+def _suggest_parallel() -> int:
+    """Suggest parallel job count based on detected GPU."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return 3  # NVENC sweet spot
+    except Exception:
+        pass
+    try:
+        import multiprocessing
+        cores = multiprocessing.cpu_count()
+        return max(1, cores // 2)
+    except Exception:
+        return 1
+
+
+def run_guided_menu(cfg: dict, config_path: Path):
+    """
+    Interactive menu shown when torrchive.py is launched with no arguments.
+    Lets the user choose what to do without needing to know CLI flags.
+    """
+    if not RICH_AVAILABLE:
+        print("1. scan  2. run  3. status  4. setup")
+        choice = input("Choice: ").strip()
+        mode_map = {"1": "scan", "2": "run", "3": "status", "4": "setup"}
+        return mode_map.get(choice, "scan"), {}, False, False, 0, [], False
+
+    from rich.console import Console
+    from rich.panel import Panel
+    console = Console()
+
+    lang = cfg.get("language", "fr")
+    tr.set(setup_i18n(lang))
+
+    console.print(Panel(
+        f"[bold cyan]Torrchive v{__version__}[/]",
+        border_style="cyan", expand=False
+    ))
+
+    console.print(f"\n[bold]{_w(lang, 'menu_title')}[/]\n")
+    options = [
+        ("scan",   _w(lang, "menu_scan")),
+        ("run",    _w(lang, "menu_run")),
+        ("runlib", _w(lang, "menu_run_lib")),
+        ("status", _w(lang, "menu_status")),
+        ("setup",  _w(lang, "menu_setup")),
+        ("quit",   _w(lang, "menu_quit")),
+    ]
+    for i, (_, label) in enumerate(options, 1):
+        console.print(f"  [bold cyan]{i}.[/] {label}")
+
+    console.print(f"\n[yellow]{_w(lang, 'menu_choice')} (1-{len(options)}):[/] ", end="")
+    choice = input().strip()
+
+    if not choice.isdigit() or not (1 <= int(choice) <= len(options)):
+        return "scan", {}, False, False, 0, []
+
+    mode_key = options[int(choice) - 1][0]
+
+    if mode_key == "quit":
+        sys.exit(0)
+
+    if mode_key == "setup":
+        return "setup", {}, False, False, 0, [], False
+
+    if mode_key in ("scan", "status"):
+        return mode_key, {}, False, False, 0, [], False
+
+    # run or runlib — ask additional options
+    kwargs: dict = {}
+    libraries: list = []
+
+    if mode_key == "runlib":
+        configured_libs = [Path(p).name for p in cfg.get("media", {}).get("paths", [])]
+        if configured_libs:
+            console.print(f"\n[cyan]{_w(lang, 'menu_lib_choice')}:[/]")
+            for i, lib in enumerate(configured_libs, 1):
+                console.print(f"  [bold]{i}.[/] {lib}")
+            console.print(f"[yellow]{_w(lang, 'menu_choice')}:[/] ", end="")
+            lib_choice = input().strip()
+            if lib_choice.isdigit() and 1 <= int(lib_choice) <= len(configured_libs):
+                libraries = [configured_libs[int(lib_choice) - 1]]
+
+    # Parallel jobs
+    cfg_parallel = int(cfg.get("performance", {}).get("parallel", 1))
+    console.print(f"[yellow]{_w(lang, 'menu_parallel')} [{cfg_parallel}]:[/] ", end="")
+    p_input = input().strip()
+    parallel = int(p_input) if p_input.isdigit() else cfg_parallel
+
+    # Schedule
+    no_schedule = not _confirm(console, lang, "menu_schedule",
+                               cfg.get("schedule", {}).get("enabled", False))
+
+    # Dry run
+    dry_run = _confirm(console, lang, "menu_dry_run", False)
+
+    # Execution mode — foreground (progress bars) or background
+    console.print(f"\n[cyan]{_w(lang, 'menu_bg_title')}:[/]")
+    console.print(f"  [bold]1.[/] {_w(lang, 'menu_fg')}")
+    console.print(f"  [bold]2.[/] {_w(lang, 'menu_bg')}")
+    console.print(f"[yellow]{_w(lang, 'menu_bg_choice')} [1/2]: [/yellow]", end="")
+    bg_choice = input().strip()
+    background = bg_choice == "2"
+
+    if not background:
+        console.print(f"\n[yellow]{_w(lang, 'menu_bg_warn')}[/]")
+
+    return "run", {"parallel": parallel, "dry_run": dry_run,
+                   "no_schedule": no_schedule, "background": background}, \
+           dry_run, no_schedule, parallel, libraries, background
+
+
+def run_setup(config_path: Path):
+    """Interactive first-run setup wizard."""
+    if not RICH_AVAILABLE:
+        print("ERROR: rich is required for the setup wizard.")
+        print("Run: pip install rich")
+        sys.exit(1)
+
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.syntax import Syntax
+    console = Console()
+
+    # ── Existing config check ─────────────────────────────────────────────────
+    if config_path.exists():
+        from rich.console import Console as _C
+        _c = _C()
+        _c.print("\n[yellow]1. Français  2. English[/]")
+        _c.print("config.yaml existe déjà / config.yaml already exists. Écraser / Overwrite? [o/y/N]: ", end="")
+        ans = input().strip().lower()
+        if ans not in ("o", "y"):
+            _c.print("[dim]Configuration conservée.[/]")
+            return
+
+    # ── Language selection (shown in all languages) ───────────────────────────
+    console.print("\n[bold]1. Français  2. English[/]")
+    console.print(f"[yellow]{_WIZARD_STRINGS['fr']['lang_prompt']} (1/2):[/] ", end="")
+    lang_choice = input().strip()
+    lang = "en" if lang_choice == "2" else "fr"
+
+    console.print(Panel(
+        f"[bold]{_w(lang, 'welcome')}[/]\n{_w(lang, 'welcome_sub')}",
+        border_style="cyan"
+    ))
+
+    cfg: dict = {}
+
+    # ── Media paths ───────────────────────────────────────────────────────────
+    _section(console, lang, "section_media")
+    n_libs = int(_prompt(console, lang, "how_many_libs", "1") or "1")
+    paths = []
+    mounted = _get_mounted_paths()
+
+    for i in range(n_libs):
+        while True:
+            path_str = ""
+
+            if mounted:
+                console.print(f"\n[cyan]{_w(lang, 'mounts_available')}[/]")
+                for idx, mp in enumerate(mounted, 1):
+                    console.print(f"  [bold]{idx}.[/] {mp}")
+                console.print(f"  [bold]{len(mounted) + 1}.[/] {_w(lang, 'mount_manual')}")
+                console.print(f"[yellow]{_w(lang, 'mount_select')} (1-{len(mounted) + 1}):[/] ", end="")
+                choice = input().strip()
+                if choice.isdigit():
+                    c = int(choice)
+                    if 1 <= c <= len(mounted):
+                        path_str = mounted[c - 1]
+                    elif c == len(mounted) + 1:
+                        path_str = ""  # fall through to manual
+                if not path_str:
+                    console.print(f"[yellow]{_w(lang, 'lib_path', i + 1)}:[/] ", end="")
+                    path_str = input().strip()
+            else:
+                console.print(f"[dim]{_w(lang, 'no_mounts')}[/]")
+                console.print(f"[yellow]{_w(lang, 'lib_path', i + 1)}:[/] ", end="")
+                path_str = input().strip()
+
+            if not path_str:
+                continue
+
+            p = Path(path_str)
+            if p.exists():
+                console.print(f"[green]{_w(lang, 'path_ok', path_str)}[/]")
+                paths.append(path_str)
+                if path_str in mounted:
+                    mounted.remove(path_str)
+                break
+
+            # Path not found — show fstab hint and let user retry
+            console.print(f"[yellow]{_w(lang, 'path_missing', path_str)}[/]")
+            if path_str.startswith("/mnt/"):
+                console.print(f"[dim]{_w(lang, 'nfs_fstab')}[/]")
+                console.print(f"[dim]  192.168.x.x:/volume1/your/export {path_str} nfs4 soft,timeo=30,retrans=3,vers=4.1,_netdev 0 0[/]")
+                console.print(f"[dim]{_w(lang, 'nfs_mount_cmd')}[/]")
+
+            console.print(f"[dim]{_w(lang, 'press_enter_retry')}[/]", end="")
+            input()
+
+            if p.exists():
+                console.print(f"[green]{_w(lang, 'path_ok', path_str)}[/]")
+                paths.append(path_str)
+                if path_str in mounted:
+                    mounted.remove(path_str)
+                break
+
+            if _confirm(console, lang, "nfs_detected", False):
+                paths.append(path_str)
+                break
+
+    cfg["media"] = {"paths": paths, "min_size_mb": 100}
+
+    # ── Torrent client ────────────────────────────────────────────────────────
+    _section(console, lang, "section_client")
+    client_options = ["qbittorrent", "deluge", "transmission", "none"]
+    for i, c in enumerate(client_options, 1):
+        console.print(f"  {i}. {c}")
+    console.print(f"[yellow]{_w(lang, 'client_type')} (1-4, défaut: 1):[/] ", end="")
+    c_choice = input().strip()
+    c_idx = (int(c_choice) - 1) if c_choice.isdigit() and 1 <= int(c_choice) <= 4 else 0
+    client_type = client_options[c_idx]
+
+    client_cfg: dict = {"type": client_type}
+    if client_type != "none":
+        client_cfg["url"] = _prompt(console, lang, "client_url", "http://192.168.1.1:8080")
+        client_cfg["username"] = _prompt(console, lang, "client_user", "admin")
+        console.print(f"[yellow]{_w(lang, 'client_pass')}:[/] ", end="")
+        import getpass
+        client_cfg["password"] = getpass.getpass("")
+
+        console.print(f"[dim]{_w(lang, 'client_test')}[/]")
+        try:
+            test_client = build_torrent_client(client_cfg)
+            files = test_client.get_managed_files()
+            console.print(f"[green]{_w(lang, 'client_ok', len(files))}[/]")
+        except Exception as e:
+            console.print(f"[red]{_w(lang, 'client_fail', e)}[/]")
+
+    cfg["torrent_client"] = client_cfg
+
+    # ── Encoder ───────────────────────────────────────────────────────────────
+    _section(console, lang, "section_encoder")
+    detected = detect_backend()
+    console.print(f"[green]{_w(lang, 'detected', detected)}[/]")
+    if not _confirm(console, lang, "confirm_encoder", True):
+        backends = ["auto", "nvenc", "vaapi", "videotoolbox", "software"]
+        for i, b in enumerate(backends, 1):
+            console.print(f"  {i}. {b}")
+        console.print(f"[yellow]{_w(lang, 'encoder_choice')} (1-5):[/] ", end="")
+        b_choice = input().strip()
+        detected = backends[(int(b_choice) - 1)] if b_choice.isdigit() and 1 <= int(b_choice) <= 5 else "auto"
+
+    # ── Codec & quality ───────────────────────────────────────────────────────
+    _section(console, lang, "section_codec")
+    console.print(f"  1. {_w(lang, 'codec_hevc_desc')}")
+    console.print(f"  2. {_w(lang, 'codec_av1_desc')}")
+    console.print(f"  3. {_w(lang, 'codec_h264_desc')}")
+    console.print(f"[yellow]{_w(lang, 'codec_choice')} (1-3, défaut: 1):[/] ", end="")
+    codec_choice = input().strip()
+    codec = ["hevc", "av1", "h264"][(int(codec_choice) - 1) if codec_choice.isdigit() and 1 <= int(codec_choice) <= 3 else 0]
+
+    default_preset = "p6" if detected == "nvenc" else "medium"
+    quality = _prompt(console, lang, "quality_prompt", "26")
+    preset = _prompt(console, lang, "preset_prompt", default_preset)
+
+    cfg["encoder"] = {
+        "backend": detected,
+        "codec": codec,
+        "quality": int(quality) if quality.isdigit() else 26,
+        "preset": preset or default_preset,
+        "max_resolution": None,
+        "audio": "copy",
+        "skip_if_already_optimal": True,
+        "skip_source_codecs": ["av1", "vp9"] if codec == "hevc" else [],
+        "normalize_filename": True,
+    }
+
+    # ── Performance ───────────────────────────────────────────────────────────
+    _section(console, lang, "section_perf")
+    suggested = _suggest_parallel()
+    console.print(f"[dim]{_w(lang, 'parallel_hint', suggested)}[/]")
+    parallel = _prompt(console, lang, "parallel_prompt", str(suggested))
+    workers = _prompt(console, lang, "workers_prompt", "16")
+
+    cfg["performance"] = {
+        "scan_workers": int(workers) if workers.isdigit() else 16,
+        "parallel": int(parallel) if parallel.isdigit() else suggested,
+    }
+
+    # ── Schedule ──────────────────────────────────────────────────────────────
+    _section(console, lang, "section_sched")
+    sched_enabled = _confirm(console, lang, "sched_enable", False)
+    sched_start = "09:00"
+    sched_stop = "20:00"
+    if sched_enabled:
+        sched_start = _prompt(console, lang, "sched_start", "09:00")
+        sched_stop = _prompt(console, lang, "sched_stop", "20:00")
+
+    cfg["schedule"] = {"enabled": sched_enabled, "start": sched_start, "stop": sched_stop}
+
+    # ── Output paths ──────────────────────────────────────────────────────────
+    _section(console, lang, "section_paths")
+    default_dir = str(Path.home() / "torrchive")
+    log = _prompt(console, lang, "log_prompt", f"{default_dir}/torrchive.log")
+    ledger = _prompt(console, lang, "ledger_prompt", f"{default_dir}/torrchive_ledger.json")
+    cache = _prompt(console, lang, "cache_prompt", f"{default_dir}/torrchive_probe_cache.json")
+
+    cfg["language"] = lang
+    cfg["display"] = {"progress_bars": True}
+    cfg["post_transcode"] = {"enabled": False}
+    cfg["log_file"] = log
+    cfg["ledger_file"] = ledger
+    cfg["probe_cache_file"] = cache
+
+    # ── Preview + write ───────────────────────────────────────────────────────
+    _section(console, lang, "section_preview")
+    yaml_preview = yaml.dump(cfg, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    console.print(Syntax(yaml_preview, "yaml", theme="monokai"))
+
+    if _confirm(console, lang, "confirm_write", True):
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        console.print(f"[green]{_w(lang, 'written', config_path)}[/]")
+
+        if _confirm(console, lang, "run_scan", True):
+            tr.set(setup_i18n(lang))
+            setup_logging(Path(log) if log else None)
+            client = build_torrent_client(cfg.get("torrent_client", {"type": "none"}))
+            managed = client.get_managed_files()
+            profile = build_encoder_profile(cfg.get("encoder", {}))
+            run_scan(cfg, managed, profile)
+    else:
+        console.print(f"[dim]{_w(lang, 'done')}[/]")
 
 
 if __name__ == "__main__":
