@@ -121,6 +121,20 @@ torrent_client:
 #           loses surround sound — only use if your setup is stereo only.
 #   opus → re-encode to Opus stereo. Smallest, modern clients only.
 #
+# audio_languages / subtitle_languages: list of language codes to keep
+#   []                 → keep every track (default, no filtering)
+#   [eng, fre]          → drop audio/subtitle tracks in any other language
+#   Accepts ISO 639-1 (en, fr) or ISO 639-2 (eng, fre/fra) codes, either form.
+#   Tracks with no language tag ("und") are ALWAYS kept — many rips simply
+#   don't tag the primary track, and dropping an unlabelled track risks
+#   silently deleting someone's only usable audio.
+#   If a file's audio has zero tracks left after filtering (e.g. it only has
+#   a language you didn't list), all its audio tracks are kept instead of
+#   producing an audio-less file — a warning is logged when this happens.
+#   Useful for MULTi releases carrying dubs/subs nobody watches — this is a
+#   real, complementary space saving on top of re-encoding, especially for
+#   commentary tracks and 5+ language WEB-DL audio.
+#
 # skip_if_already_optimal: true | false
 #   true  → skip files already in the target codec with no resolution change needed
 #            (e.g. if target is hevc, skip files already encoded as hevc)
@@ -148,6 +162,8 @@ encoder:
   audio: copy
   audio_bitrate: 192k   # only used when audio is aac or opus
   audio_channels: 2     # only used when audio is aac or opus
+  audio_languages: []       # e.g. [eng, fre] — drop other-language dubs
+  subtitle_languages: []    # e.g. [eng, fre] — drop other-language subs
   skip_if_already_optimal: true
   skip_if_smaller_codec: true       # skip sources already more efficient than target (e.g. AV1 when targeting HEVC)
   skip_source_codecs: []

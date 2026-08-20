@@ -469,6 +469,8 @@ class EncoderProfile:
     audio_channels: int
     normalize_filename: bool
     hwaccel: bool = True  # use hardware-accelerated decoding on input
+    audio_languages: list[str] = field(default_factory=list)     # ISO 639-2/B codes; empty = keep all
+    subtitle_languages: list[str] = field(default_factory=list)  # ISO 639-2/B codes; empty = keep all
 
 
 # Codec → encoder name per backend
@@ -612,20 +614,69 @@ def build_encoder_profile(cfg: dict) -> EncoderProfile:
         audio_channels=int(cfg.get("audio_channels", 2)),
         normalize_filename=cfg.get("normalize_filename", True),
         hwaccel=hwaccel,
+        audio_languages=[normalize_lang(c) for c in cfg.get("audio_languages", [])],
+        subtitle_languages=[normalize_lang(c) for c in cfg.get("subtitle_languages", [])],
     )
 
 
-def probe_subtitle_codecs(src: Path) -> list[str]:
-    """Codec name for each subtitle stream, in stream order. Empty list on failure."""
+# ISO 639-2/T → ISO 639-2/B aliases so either form in config or in a file's
+# tags still matches (sources are inconsistent about which one they tag with).
+_LANG_ALIASES = {
+    "fra": "fre", "deu": "ger", "zho": "chi", "ron": "rum", "ces": "cze",
+    "nld": "dut", "ell": "gre", "isl": "ice", "mkd": "mac", "msa": "may",
+    "mya": "bur", "sqi": "alb", "bod": "tib", "cym": "wel", "eus": "baq",
+    "kat": "geo", "slk": "slo",
+}
+# ISO 639-1 (2-letter) → ISO 639-2/B (3-letter), for convenient config entries.
+_LANG_2TO3 = {
+    "en": "eng", "fr": "fre", "de": "ger", "es": "spa", "it": "ita",
+    "pt": "por", "ru": "rus", "ja": "jpn", "zh": "chi", "ko": "kor",
+    "nl": "dut", "ar": "ara", "tr": "tur", "pl": "pol", "sv": "swe",
+    "da": "dan", "no": "nor", "fi": "fin", "he": "heb", "hi": "hin",
+    "th": "tha", "vi": "vie", "cs": "cze", "hu": "hun", "el": "gre",
+    "ro": "rum", "uk": "ukr", "id": "ind",
+}
+
+
+def normalize_lang(code: Optional[str]) -> str:
+    """Canonicalise a language code to ISO 639-2/B, lowercase. Empty/unknown → 'und'."""
+    code = (code or "und").strip().lower()
+    if len(code) == 2:
+        code = _LANG_2TO3.get(code, code)
+    return _LANG_ALIASES.get(code, code)
+
+
+def probe_stream_tracks(src: Path) -> tuple[list[dict], list[dict]]:
+    """
+    Probe audio/subtitle streams in container order.
+    Returns (audio_tracks, subtitle_tracks); each entry is
+    {"codec": str, "lang": str}. List index == ffmpeg's per-type stream
+    index (the N in -map 0:a:N / -map 0:s:N / -c:s:N).
+    Empty lists on failure — callers must treat that as "keep everything".
+    """
     try:
         out = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "s",
-             "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(src)],
+            ["ffprobe", "-v", "error",
+             "-show_entries", "stream=index,codec_type,codec_name:stream_tags=language",
+             "-of", "json", str(src)],
             capture_output=True, text=True, timeout=15,
         ).stdout
-        return [line.strip() for line in out.splitlines() if line.strip()]
+        streams = json.loads(out).get("streams", [])
     except Exception:
-        return []
+        return [], []
+
+    audio: list[dict] = []
+    subs: list[dict] = []
+    for s in streams:
+        entry = {
+            "codec": s.get("codec_name", ""),
+            "lang": normalize_lang((s.get("tags") or {}).get("language")),
+        }
+        if s.get("codec_type") == "audio":
+            audio.append(entry)
+        elif s.get("codec_type") == "subtitle":
+            subs.append(entry)
+    return audio, subs
 
 
 def build_ffmpeg_cmd(src: Path, dst: Path, profile: EncoderProfile,
@@ -673,18 +724,67 @@ def build_ffmpeg_cmd(src: Path, dst: Path, profile: EncoderProfile,
             "-ac", str(profile.audio_channels),
         ]
 
+    audio_tracks, subtitle_tracks = probe_stream_tracks(src)
+
+    # Audio-language filtering (e.g. keep only eng/fre dubs to drop the rest).
+    # Tracks with no/unknown language tag ("und") are always kept — many rips
+    # simply don't tag the primary track, and dropping an unlabelled track
+    # could silently delete someone's only usable audio.
+    if profile.audio_languages and audio_tracks:
+        kept_audio = [
+            i for i, t in enumerate(audio_tracks)
+            if t["lang"] == "und" or t["lang"] in profile.audio_languages
+        ]
+        if not kept_audio:
+            logging.warning(
+                tr("{}: no audio track matches configured languages {} — keeping all tracks")
+                .format(src.name, profile.audio_languages)
+            )
+            kept_audio = list(range(len(audio_tracks)))
+        elif len(kept_audio) < len(audio_tracks):
+            logging.info(
+                tr("{}: keeping {}/{} audio track(s)")
+                .format(src.name, len(kept_audio), len(audio_tracks))
+            )
+        audio_maps = [f"0:a:{i}" for i in kept_audio]
+    else:
+        audio_maps = ["0:a"]
+
+    # Subtitle-language filtering, same "und" safety rule as above. Dropping
+    # every subtitle track is fine (unlike audio) — output just has none.
+    if profile.subtitle_languages and subtitle_tracks:
+        kept_subs = [
+            i for i, t in enumerate(subtitle_tracks)
+            if t["lang"] == "und" or t["lang"] in profile.subtitle_languages
+        ]
+        if len(kept_subs) < len(subtitle_tracks):
+            logging.info(
+                tr("{}: keeping {}/{} subtitle track(s)")
+                .format(src.name, len(kept_subs), len(subtitle_tracks))
+            )
+    else:
+        kept_subs = list(range(len(subtitle_tracks)))
+
     # mov_text (MP4 timed-text subtitles) can't be muxed into Matroska — copying
     # it fails the whole mux, which ffmpeg reports as a misleading generic
     # "Function not implemented" error. Re-encode just those streams to SRT;
     # leave everything else (ass, pgs, vobsub, ...) as a lossless copy.
-    sub_codecs = probe_subtitle_codecs(src)
+    # Indices here are OUTPUT positions (post-filtering), which is what -c:s:N
+    # actually addresses — not the original source subtitle index.
     sub_flags = []
-    for i, codec in enumerate(sub_codecs):
-        sub_flags += [f"-c:s:{i}", "srt" if codec == "mov_text" else "copy"]
+    for out_idx, src_idx in enumerate(kept_subs):
+        codec = subtitle_tracks[src_idx]["codec"]
+        sub_flags += [f"-c:s:{out_idx}", "srt" if codec == "mov_text" else "copy"]
     if not sub_flags:
         sub_flags = ["-c:s", "copy"]
 
-    cmd += [*sub_flags, "-map", "0:V", "-map", "0:a", "-map", "0:s?", str(dst)]
+    map_args = ["-map", "0:V"]
+    for m in audio_maps:
+        map_args += ["-map", m]
+    for i in kept_subs:
+        map_args += ["-map", f"0:s:{i}"]
+
+    cmd += [*sub_flags, *map_args, str(dst)]
     return cmd
 
 
