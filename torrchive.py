@@ -25,6 +25,7 @@ import sys
 import json
 import time
 import fcntl
+import random
 import logging
 import argparse
 import gettext as gettext_module
@@ -1862,6 +1863,14 @@ _WIZARD_STRINGS = {
         "tb_detected":       "eGPU Thunderbolt détecté — décodage matériel désactivé pour la stabilité",
         "hwaccel_disabled":  "Décodage matériel désactivé — décodage CPU utilisé",
         "skip":            "Ignorer / conserver la valeur par défaut",
+        "test_offer":      "Tester ces réglages sur un extrait d'un fichier réel avant de continuer ?",
+        "test_picking":    "Sélection d'un fichier aléatoire dans vos bibliothèques...",
+        "test_no_files":   "Aucun fichier vidéo éligible trouvé — test ignoré.",
+        "test_file":       "Fichier de test : {}",
+        "test_running":    "Encodage d'un extrait de {}s à titre d'aperçu (rien n'est modifié dans votre bibliothèque)...",
+        "test_done":       "Aperçu généré : {} ({})",
+        "test_failed":     "L'encodage de test a échoué : {}",
+        "test_adjust":     "Ajuster le codec/la qualité/le preset et retester ?",
         "yes": "oui", "no": "non",
     },
     "en": {
@@ -1944,6 +1953,14 @@ _WIZARD_STRINGS = {
         "tb_detected":       "Thunderbolt eGPU detected — disabling hwaccel decode for stability",
         "hwaccel_disabled":  "Hardware decode disabled — using CPU for decoding",
         "skip":            "Skip / keep default",
+        "test_offer":      "Test these settings on a clip from a real file before continuing?",
+        "test_picking":    "Picking a random file from your libraries...",
+        "test_no_files":   "No eligible video file found — skipping test.",
+        "test_file":       "Test file: {}",
+        "test_running":    "Encoding a {}s preview clip (nothing in your library is touched)...",
+        "test_done":       "Preview generated: {} ({})",
+        "test_failed":     "Test encode failed: {}",
+        "test_adjust":     "Adjust codec/quality/preset and test again?",
         "yes": "yes", "no": "no",
     },
 }
@@ -2140,6 +2157,73 @@ def run_guided_menu(cfg: dict, config_path: Path):
            dry_run, no_schedule, parallel, libraries, background
 
 
+def _pick_random_video(paths: list[str], min_size_mb: float) -> Optional[Path]:
+    """Reservoir-sample one eligible video file from the configured libraries."""
+    min_bytes = min_size_mb * 1024 * 1024
+    chosen: Optional[Path] = None
+    seen = 0
+    for base in paths:
+        root = Path(base)
+        if not root.exists():
+            continue
+        for p in root.rglob("*"):
+            if p.suffix.lower() not in VIDEO_EXTENSIONS or not p.is_file():
+                continue
+            try:
+                if p.stat().st_size < min_bytes:
+                    continue
+            except OSError:
+                continue
+            seen += 1
+            if random.randint(1, seen) == 1:
+                chosen = p
+    return chosen
+
+
+def _run_test_transcode(console, lang: str, paths: list[str], encoder_cfg: dict) -> None:
+    """
+    Non-committing preview: encodes a short clip from a random library file
+    with the tentative settings, written to a scratch file. Nothing in the
+    media library is touched, and nothing is added to the ledger.
+    """
+    console.print(f"[dim]{_w(lang, 'test_picking')}[/]")
+    src = _pick_random_video(paths, 100)
+    if src is None:
+        console.print(f"[yellow]{_w(lang, 'test_no_files')}[/]")
+        return
+
+    console.print(f"[cyan]{_w(lang, 'test_file', src)}[/]")
+
+    profile = build_encoder_profile(encoder_cfg)
+    _codec, height = probe_file(src)
+
+    test_dir = Path.home() / "torrchive"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    dst = test_dir / "torrchive_test_preview.mkv"
+
+    cmd = build_ffmpeg_cmd(src, dst, profile, height)
+
+    duration = get_video_duration(src)
+    seek = min(duration * 0.25, 300) if duration else 0
+    clip_seconds = 30
+
+    i_idx = cmd.index("-i")
+    cmd[i_idx:i_idx] = ["-ss", str(int(seek))]
+    src_idx = cmd.index(str(src))
+    cmd[src_idx + 1:src_idx + 1] = ["-t", str(clip_seconds)]
+
+    console.print(f"[dim]{_w(lang, 'test_running', clip_seconds)}[/]")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
+        detail = (result.stderr or "").strip().splitlines()
+        console.print(f"[red]{_w(lang, 'test_failed', detail[-1] if detail else result.returncode)}[/]")
+        return
+
+    size_mb = dst.stat().st_size / (1024 * 1024)
+    console.print(f"[green]{_w(lang, 'test_done', dst, f'{size_mb:.1f} MB')}[/]")
+
+
 def run_setup(config_path: Path):
     """Interactive first-run setup wizard."""
     if not RICH_AVAILABLE:
@@ -2282,29 +2366,47 @@ def run_setup(config_path: Path):
         detected = backends[(int(b_choice) - 1)] if b_choice.isdigit() and 1 <= int(b_choice) <= 5 else "auto"
 
     # ── Codec & quality ───────────────────────────────────────────────────────
+    def _ask_codec_quality() -> tuple[str, int, str]:
+        console.print(f"  1. {_w(lang, 'codec_hevc_desc')}")
+        console.print(f"  2. {_w(lang, 'codec_av1_desc')}")
+        console.print(f"  3. {_w(lang, 'codec_h264_desc')}")
+        console.print(f"[yellow]{_w(lang, 'codec_choice')} (1-3, défaut: 1):[/] ", end="")
+        codec_choice = input().strip()
+        c = ["hevc", "av1", "h264"][(int(codec_choice) - 1) if codec_choice.isdigit() and 1 <= int(codec_choice) <= 3 else 0]
+
+        default_preset = "p6" if detected == "nvenc" else "medium"
+        q = _prompt(console, lang, "quality_prompt", "26")
+        pr = _prompt(console, lang, "preset_prompt", default_preset)
+        return c, (int(q) if q.isdigit() else 26), (pr or default_preset)
+
     _section(console, lang, "section_codec")
-    console.print(f"  1. {_w(lang, 'codec_hevc_desc')}")
-    console.print(f"  2. {_w(lang, 'codec_av1_desc')}")
-    console.print(f"  3. {_w(lang, 'codec_h264_desc')}")
-    console.print(f"[yellow]{_w(lang, 'codec_choice')} (1-3, défaut: 1):[/] ", end="")
-    codec_choice = input().strip()
-    codec = ["hevc", "av1", "h264"][(int(codec_choice) - 1) if codec_choice.isdigit() and 1 <= int(codec_choice) <= 3 else 0]
+    codec, quality_val, preset = _ask_codec_quality()
 
-    default_preset = "p6" if detected == "nvenc" else "medium"
-    quality = _prompt(console, lang, "quality_prompt", "26")
-    preset = _prompt(console, lang, "preset_prompt", default_preset)
+    # ── Test / adjust loop ────────────────────────────────────────────────────
+    # Non-committing preview: nothing here touches the media library or the
+    # ledger, so the user can freely tweak codec/quality/preset before any
+    # of it is written to config.yaml.
+    while True:
+        cfg["encoder"] = {
+            "backend": detected,
+            "codec": codec,
+            "quality": quality_val,
+            "preset": preset,
+            "max_resolution": None,
+            "audio": "copy",
+            "skip_if_already_optimal": True,
+            "skip_source_codecs": ["av1", "vp9"] if codec == "hevc" else [],
+            "normalize_filename": True,
+        }
 
-    cfg["encoder"] = {
-        "backend": detected,
-        "codec": codec,
-        "quality": int(quality) if quality.isdigit() else 26,
-        "preset": preset or default_preset,
-        "max_resolution": None,
-        "audio": "copy",
-        "skip_if_already_optimal": True,
-        "skip_source_codecs": ["av1", "vp9"] if codec == "hevc" else [],
-        "normalize_filename": True,
-    }
+        if _confirm(console, lang, "test_offer", False):
+            _run_test_transcode(console, lang, paths, cfg["encoder"])
+
+        if not _confirm(console, lang, "test_adjust", False):
+            break
+
+        _section(console, lang, "section_codec")
+        codec, quality_val, preset = _ask_codec_quality()
 
     # ── Performance ───────────────────────────────────────────────────────────
     _section(console, lang, "section_perf")
