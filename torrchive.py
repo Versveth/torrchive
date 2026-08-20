@@ -615,6 +615,19 @@ def build_encoder_profile(cfg: dict) -> EncoderProfile:
     )
 
 
+def probe_subtitle_codecs(src: Path) -> list[str]:
+    """Codec name for each subtitle stream, in stream order. Empty list on failure."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "s",
+             "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(src)],
+            capture_output=True, text=True, timeout=15,
+        ).stdout
+        return [line.strip() for line in out.splitlines() if line.strip()]
+    except Exception:
+        return []
+
+
 def build_ffmpeg_cmd(src: Path, dst: Path, profile: EncoderProfile,
                      source_height: int) -> list[str]:
     codec_name = CODEC_MAP[profile.backend][profile.codec]
@@ -660,7 +673,18 @@ def build_ffmpeg_cmd(src: Path, dst: Path, profile: EncoderProfile,
             "-ac", str(profile.audio_channels),
         ]
 
-    cmd += ["-c:s", "copy", "-map", "0:V", "-map", "0:a", "-map", "0:s?", str(dst)]
+    # mov_text (MP4 timed-text subtitles) can't be muxed into Matroska — copying
+    # it fails the whole mux, which ffmpeg reports as a misleading generic
+    # "Function not implemented" error. Re-encode just those streams to SRT;
+    # leave everything else (ass, pgs, vobsub, ...) as a lossless copy.
+    sub_codecs = probe_subtitle_codecs(src)
+    sub_flags = []
+    for i, codec in enumerate(sub_codecs):
+        sub_flags += [f"-c:s:{i}", "srt" if codec == "mov_text" else "copy"]
+    if not sub_flags:
+        sub_flags = ["-c:s", "copy"]
+
+    cmd += [*sub_flags, "-map", "0:V", "-map", "0:a", "-map", "0:s?", str(dst)]
     return cmd
 
 
