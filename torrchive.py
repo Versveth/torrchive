@@ -27,6 +27,8 @@ import time
 import fcntl
 import random
 import logging
+import tempfile
+import threading
 import argparse
 import gettext as gettext_module
 import subprocess
@@ -894,6 +896,31 @@ def probe_file(path: Path) -> tuple[str, int]:
 
 
 
+def _atomic_write_json(path: Path, data) -> None:
+    """
+    Write JSON atomically: a temp file is written in full, then swapped into
+    place with a single filesystem rename. A crash or concurrent writer can
+    then never leave a truncated/interleaved file on disk — the previous
+    plain open(path, "w") could (and did, in production: two parallel
+    transcode workers finishing at the same moment both truncated and wrote
+    the ledger concurrently, leaving a corrupt file with a stray trailing
+    "]" that then failed every subsequent load, silently losing every
+    ledger entry after that point).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 # ─── Probe cache ─────────────────────────────────────────────────────────────
 
 class ProbeCache:
@@ -923,9 +950,7 @@ class ProbeCache:
     def save(self):
         if not self._dirty:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "w") as f:
-            json.dump(self._data, f)
+        _atomic_write_json(self.path, self._data)
         logging.info(tr("Probe cache: saved {} entries to {}").format(len(self._data), self.path))
         self._dirty = False
 
@@ -1013,6 +1038,9 @@ def wait_for_schedule(start: dtime, stop: dtime):
 
 # ─── Ledger ──────────────────────────────────────────────────────────────────
 
+_ledger_lock = threading.Lock()
+
+
 def load_ledger(path: Path) -> list[dict]:
     if path.exists():
         with open(path) as f:
@@ -1021,32 +1049,35 @@ def load_ledger(path: Path) -> list[dict]:
 
 
 def save_ledger(ledger: list[dict], path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(ledger, f, indent=2)
+    _atomic_write_json(path, ledger)
 
 
 def record_transcode(ledger_path: Path, src: str, dst: str,
                      original_mb: float, transcoded_mb: float):
-    ledger = load_ledger(ledger_path)
-    for entry in ledger:
-        if entry["source"] == src:
-            entry.update({
-                "destination": dst,
-                "original_mb": round(original_mb, 1),
-                "transcoded_mb": round(transcoded_mb, 1),
-                "transcoded_at": datetime.now().isoformat(),
-            })
-            save_ledger(ledger, ledger_path)
-            return
-    ledger.append({
-        "source": src,
-        "destination": dst,
-        "original_mb": round(original_mb, 1),
-        "transcoded_mb": round(transcoded_mb, 1),
-        "transcoded_at": datetime.now().isoformat(),
-    })
-    save_ledger(ledger, ledger_path)
+    # record_transcode runs on a worker thread per parallel job — without this
+    # lock, two threads finishing around the same moment both read-modify-write
+    # the ledger concurrently and race each other's file write (see
+    # _atomic_write_json's docstring for what that looked like in production).
+    with _ledger_lock:
+        ledger = load_ledger(ledger_path)
+        for entry in ledger:
+            if entry["source"] == src:
+                entry.update({
+                    "destination": dst,
+                    "original_mb": round(original_mb, 1),
+                    "transcoded_mb": round(transcoded_mb, 1),
+                    "transcoded_at": datetime.now().isoformat(),
+                })
+                save_ledger(ledger, ledger_path)
+                return
+        ledger.append({
+            "source": src,
+            "destination": dst,
+            "original_mb": round(original_mb, 1),
+            "transcoded_mb": round(transcoded_mb, 1),
+            "transcoded_at": datetime.now().isoformat(),
+        })
+        save_ledger(ledger, ledger_path)
 
 
 # ─── Scanner ─────────────────────────────────────────────────────────────────
