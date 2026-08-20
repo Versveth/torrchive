@@ -26,6 +26,7 @@ import json
 import time
 import fcntl
 import random
+import shutil
 import logging
 import tempfile
 import threading
@@ -474,6 +475,7 @@ class EncoderProfile:
     hwaccel: bool = True  # use hardware-accelerated decoding on input
     audio_languages: list[str] = field(default_factory=list)     # ISO 639-2/B codes; empty = keep all
     subtitle_languages: list[str] = field(default_factory=list)  # ISO 639-2/B codes; empty = keep all
+    low_priority: bool = False  # renice/ionice every ffmpeg job so it never starves an interactive desktop
 
 
 # Codec → encoder name per backend
@@ -682,6 +684,21 @@ def probe_stream_tracks(src: Path) -> tuple[list[dict], list[dict]]:
     return audio, subs
 
 
+def _low_priority_prefix() -> list[str]:
+    """
+    Command prefix that lowers CPU (nice) and disk I/O (ionice, Linux-only)
+    scheduling priority for the process it wraps, so an encode job never
+    starves an interactive desktop session sharing the same machine.
+    Best-effort: silently omits whichever tool isn't on PATH.
+    """
+    prefix: list[str] = []
+    if shutil.which("ionice"):
+        prefix += ["ionice", "-c2", "-n7"]
+    if shutil.which("nice"):
+        prefix += ["nice", "-n", "10"]
+    return prefix
+
+
 def build_ffmpeg_cmd(src: Path, dst: Path, profile: EncoderProfile,
                      source_height: int) -> list[str]:
     codec_name = CODEC_MAP[profile.backend][profile.codec]
@@ -788,6 +805,10 @@ def build_ffmpeg_cmd(src: Path, dst: Path, profile: EncoderProfile,
         map_args += ["-map", f"0:s:{i}"]
 
     cmd += [*sub_flags, *map_args, str(dst)]
+
+    if profile.low_priority:
+        cmd = _low_priority_prefix() + cmd
+
     return cmd
 
 
@@ -1718,6 +1739,10 @@ Examples:
                         help="Override config paths — scan specific library "
                              "subfolder(s) by name (e.g. --library Anime Films). "
                              "Must be direct children of a configured media path.")
+    parser.add_argument("--low-priority", action="store_true",
+                        help="Renice/ionice every ffmpeg job so it never starves "
+                             "an interactive desktop session on the same machine. "
+                             "Equivalent to performance.low_priority: true in config.")
     parser.add_argument("--version", action="version", version=f"Torrchive {__version__}")
     args = parser.parse_args()
 
@@ -1772,6 +1797,9 @@ Examples:
     managed_files = client.get_managed_files()
 
     profile = build_encoder_profile(cfg.get("encoder", {}))
+    profile.low_priority = args.low_priority or bool(cfg.get("performance", {}).get("low_priority", False))
+    if profile.low_priority:
+        logging.info(tr("Encoder: low priority mode — nice/ionice applied to every ffmpeg job"))
     logging.info(tr("Encoder: {} / {} / quality {} / preset {}").format(profile.backend, profile.codec.upper(), profile.quality, profile.preset) + (f" / max {profile.max_resolution}p" if profile.max_resolution else ""))
 
     # --library CLI override: filter configured paths by their last component name

@@ -234,9 +234,18 @@ schedule:
 #     - VAAPI: 2–4 depending on iGPU generation
 #   Start with 2, increase by 1 while monitoring GPU encoder utilisation.
 #
+# low_priority: true | false
+#   true  → every ffmpeg job runs under nice -n 10 + ionice best-effort/7,
+#           so it never starves an interactive desktop session sharing the
+#           same machine. Encodes may take a little longer under contention.
+#   false → normal scheduling priority (default). Recommended for a
+#           dedicated/headless transcode box with no interactive use.
+#   Override per-run with --low-priority regardless of this setting.
+#
 performance:
   scan_workers: 16
   parallel: 1
+  low_priority: false
 
 
 # ─── Post-transcode hooks ─────────────────────────────────────────────────────
