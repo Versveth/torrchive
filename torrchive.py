@@ -24,6 +24,7 @@ import re
 import sys
 import json
 import time
+import fcntl
 import logging
 import argparse
 import gettext as gettext_module
@@ -209,6 +210,41 @@ def setup_logging(log_file: Optional[Path]):
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=handlers,
     )
+
+
+class RunLockError(Exception):
+    """Raised when another `torrchive.py run` is already active."""
+
+
+def acquire_run_lock(log_file: Optional[Path]):
+    """
+    Exclusive, non-blocking lock so two `run` invocations can never process
+    the same library concurrently — two independent processes can otherwise
+    both pick the same pending file, compute the same deterministic temp
+    filename (md5 of the source path), and clobber each other's output.
+    Returns the open lock file handle; caller must keep a reference to it
+    for the lifetime of the run (closing/GC'ing it releases the lock).
+    """
+    lock_dir = log_file.parent if log_file else Path(__file__).parent
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / "torrchive.run.lock"
+    fh = open(lock_path, "a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.seek(0)
+        holder = fh.read().strip() or "unknown PID"
+        fh.close()
+        raise RunLockError(
+            f"Another torrchive run is already active (lock held by {holder}). "
+            f"Refusing to start a second instance against the same library — "
+            f"check `ps aux | grep torrchive` before retrying."
+        )
+    fh.seek(0)
+    fh.truncate()
+    fh.write(str(os.getpid()))
+    fh.flush()
+    return fh
 
 
 # ─── Torrent client abstraction ──────────────────────────────────────────────
@@ -1604,6 +1640,12 @@ Examples:
     if args.mode == "scan":
         run_scan(cfg, managed_files, profile)
     elif args.mode == "run":
+        if not args.dry_run:
+            try:
+                _run_lock_fh = acquire_run_lock(Path(log_file) if log_file else None)
+            except RunLockError as e:
+                logging.error(str(e))
+                sys.exit(1)
         run_transcode(cfg, managed_files, profile,
                       dry_run=args.dry_run,
                       limit=args.limit,
