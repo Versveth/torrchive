@@ -1871,6 +1871,13 @@ _WIZARD_STRINGS = {
         "test_done":       "Aperçu généré : {} ({})",
         "test_failed":     "L'encodage de test a échoué : {}",
         "test_adjust":     "Ajuster le codec/la qualité/le preset et retester ?",
+        "section_languages": "LANGUES AUDIO ET SOUS-TITRES",
+        "lang_filter_intro": "Les fichiers MULTi contiennent souvent plusieurs pistes audio et de sous-titres. Restreindre aux langues voulues économise de l'espace réel.",
+        "audio_lang_confirm": "Restreindre les pistes audio à des langues spécifiques ?",
+        "audio_lang_prompt":  "Langues à conserver, séparées par des virgules (ex: eng,fre ou en,fr)",
+        "sub_lang_confirm":   "Restreindre les sous-titres à des langues spécifiques ?",
+        "sub_lang_prompt":    "Langues à conserver, séparées par des virgules (ex: eng,fre ou en,fr)",
+        "lang_und_note":      "Note : les pistes sans langue identifiée sont toujours conservées, par sécurité.",
         "yes": "oui", "no": "non",
     },
     "en": {
@@ -1961,6 +1968,13 @@ _WIZARD_STRINGS = {
         "test_done":       "Preview generated: {} ({})",
         "test_failed":     "Test encode failed: {}",
         "test_adjust":     "Adjust codec/quality/preset and test again?",
+        "section_languages": "AUDIO AND SUBTITLE LANGUAGES",
+        "lang_filter_intro": "MULTi releases often carry several audio and subtitle tracks. Restricting to the languages you actually want saves real space.",
+        "audio_lang_confirm": "Restrict audio tracks to specific languages?",
+        "audio_lang_prompt":  "Languages to keep, comma-separated (e.g. eng,fre or en,fr)",
+        "sub_lang_confirm":   "Restrict subtitle tracks to specific languages?",
+        "sub_lang_prompt":    "Languages to keep, comma-separated (e.g. eng,fre or en,fr)",
+        "lang_und_note":      "Note: tracks with no identified language are always kept, as a safety net.",
         "yes": "yes", "no": "no",
     },
 }
@@ -1977,9 +1991,14 @@ def _section(console, lang: str, key: str):
 
 
 def _prompt(console, lang: str, key: str, default: str = "", *args) -> str:
+    from rich.markup import escape
     label = _w(lang, key, *args)
     if default:
-        label += f" [{default}]"
+        # escape() wraps the WHOLE "[default]" hint, not just its contents —
+        # the literal brackets we add here are what Rich parses as a markup
+        # tag (e.g. "[/home/...]" reads as a closing tag) and crashes the
+        # prompt for any absolute-path default (log_file, ledger_file, ...).
+        label += escape(f" [{default}]")
     console.print(f"[yellow]{label}:[/] ", end="")
     val = input().strip()
     return val if val else default
@@ -2382,10 +2401,32 @@ def run_setup(config_path: Path):
     _section(console, lang, "section_codec")
     codec, quality_val, preset = _ask_codec_quality()
 
+    # ── Audio / subtitle languages ────────────────────────────────────────────
+    def _ask_languages() -> tuple[list[str], list[str]]:
+        _section(console, lang, "section_languages")
+        console.print(f"[dim]{_w(lang, 'lang_filter_intro')}[/]")
+
+        audio_langs: list[str] = []
+        if _confirm(console, lang, "audio_lang_confirm", False):
+            raw = _prompt(console, lang, "audio_lang_prompt", "eng,fre")
+            audio_langs = [normalize_lang(c) for c in raw.split(",") if c.strip()]
+
+        sub_langs: list[str] = []
+        sub_default = ",".join(audio_langs) if audio_langs else "eng,fre"
+        if _confirm(console, lang, "sub_lang_confirm", False):
+            raw = _prompt(console, lang, "sub_lang_prompt", sub_default)
+            sub_langs = [normalize_lang(c) for c in raw.split(",") if c.strip()]
+
+        if audio_langs or sub_langs:
+            console.print(f"[dim]{_w(lang, 'lang_und_note')}[/]")
+        return audio_langs, sub_langs
+
+    audio_languages, subtitle_languages = _ask_languages()
+
     # ── Test / adjust loop ────────────────────────────────────────────────────
     # Non-committing preview: nothing here touches the media library or the
-    # ledger, so the user can freely tweak codec/quality/preset before any
-    # of it is written to config.yaml.
+    # ledger, so the user can freely tweak codec/quality/preset/languages
+    # before any of it is written to config.yaml.
     while True:
         cfg["encoder"] = {
             "backend": detected,
@@ -2394,6 +2435,8 @@ def run_setup(config_path: Path):
             "preset": preset,
             "max_resolution": None,
             "audio": "copy",
+            "audio_languages": audio_languages,
+            "subtitle_languages": subtitle_languages,
             "skip_if_already_optimal": True,
             "skip_source_codecs": ["av1", "vp9"] if codec == "hevc" else [],
             "normalize_filename": True,
@@ -2407,6 +2450,7 @@ def run_setup(config_path: Path):
 
         _section(console, lang, "section_codec")
         codec, quality_val, preset = _ask_codec_quality()
+        audio_languages, subtitle_languages = _ask_languages()
 
     # ── Performance ───────────────────────────────────────────────────────────
     _section(console, lang, "section_perf")
