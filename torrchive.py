@@ -220,6 +220,34 @@ class RunLockError(Exception):
     """Raised when another `torrchive.py run` is already active."""
 
 
+def _active_run_pid(log_file: Optional[Path]) -> Optional[str]:
+    """
+    Check torrchive.run.lock without holding it. Returns the PID string of an
+    active `run` if the lock is currently held, else None. Callers that are
+    about to touch .torrchive_tmp_* files outside of run_transcode's own
+    (lock-protected) startup cleanup must check this first — those temp files
+    may be the live output of an in-progress ffmpeg job.
+    """
+    lock_dir = log_file.parent if log_file else Path(__file__).parent
+    lock_path = lock_dir / "torrchive.run.lock"
+    if not lock_path.exists():
+        return None
+    try:
+        fh = open(lock_path, "r+")
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.seek(0)
+        holder = fh.read().strip() or "unknown PID"
+        fh.close()
+        return holder
+    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    fh.close()
+    return None
+
+
 def acquire_run_lock(log_file: Optional[Path]):
     """
     Exclusive, non-blocking lock so two `run` invocations can never process
@@ -1106,18 +1134,32 @@ def record_transcode(ledger_path: Path, src: str, dst: str,
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".flv", ".mov"}
 
 
-def cleanup_tmp_files(media_paths: list[Path], silent: bool = False) -> int:
-    """Remove any leftover .torrchive_tmp_* files from previous interrupted runs."""
+def find_tmp_files(media_paths: list[Path]) -> list[Path]:
+    """Locate leftover .torrchive_tmp_* files under the configured media paths."""
     found = []
     for base in media_paths:
         if base.exists():
             found.extend(base.rglob(".torrchive_tmp_*.mkv"))
-    if found:
-        for f in found:
-            f.unlink(missing_ok=True)
-        if not silent:
-            logging.info(tr("Startup cleanup: removed {} leftover temp file(s)").format(len(found)))
-    return len(found)
+    return found
+
+
+def cleanup_tmp_files(media_paths: list[Path], silent: bool = False) -> list[tuple[Path, int]]:
+    """Remove any leftover .torrchive_tmp_* files from previous interrupted runs.
+
+    Returns the list of (path, size_bytes) removed, for callers that want to report details.
+    """
+    found = find_tmp_files(media_paths)
+    removed = []
+    for f in found:
+        try:
+            size = f.stat().st_size
+        except OSError:
+            size = 0
+        f.unlink(missing_ok=True)
+        removed.append((f, size))
+    if removed and not silent:
+        logging.info(tr("Startup cleanup: removed {} leftover temp file(s)").format(len(removed)))
+    return removed
 
 
 def scan(media_paths: list[Path], managed_files: set[str],
@@ -1497,10 +1539,16 @@ def _run_with_progress(target: list, profile, ledger_path: Path,
     existing_tmp = [f for f in tmp_files if f.exists()]
     if existing_tmp:
         console.print(f"\n[yellow]Found {len(existing_tmp)} incomplete temp file(s).[/]")
-        try:
-            answer = input("Delete them? [y/N] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            answer = "n"
+        if sys.stdin.isatty():
+            try:
+                answer = input("Delete them? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = "n"
+        else:
+            # No terminal to prompt (cron/nohup/background) — don't leave orphaned
+            # partial files sitting in the library, delete them automatically.
+            console.print("[dim]No interactive terminal — deleting automatically.[/]")
+            answer = "y"
         if answer == "y":
             for f in existing_tmp:
                 f.unlink(missing_ok=True)
@@ -1513,6 +1561,13 @@ def run_scan(cfg: dict, managed_files: set[str], profile: EncoderProfile):
     media_paths = [Path(p) for p in cfg["media"]["paths"]]
     min_size = float(cfg["media"].get("min_size_mb", 100))
     workers = int(cfg.get("performance", {}).get("scan_workers", 16))
+
+    log_file = cfg.get("log_file")
+    active_pid = _active_run_pid(Path(log_file) if log_file else None)
+    if active_pid:
+        logging.warning(tr("Skipping temp-file cleanup — a torrchive run is active (PID {}).").format(active_pid))
+    else:
+        cleanup_tmp_files(media_paths)
 
     cache_path = Path(cfg.get("probe_cache_file", "torrchive_probe_cache.json"))
     cache = ProbeCache(cache_path)
@@ -1699,6 +1754,53 @@ def run_status(cfg: dict):
     logging.info(f"  Space saved    : {saved / 1024:.1f} GB ({saved / total_original:.0%})")
 
 
+def run_clean(cfg: dict, dry_run: bool = False):
+    """Scan configured media paths for leftover .torrchive_tmp_* files and remove them.
+
+    Standalone equivalent of the automatic startup cleanup in run_scan/run_transcode —
+    useful to check/clear temp files without also kicking off a scan or transcode.
+    """
+    media_paths = [Path(p) for p in cfg["media"]["paths"]]
+    log_file = cfg.get("log_file")
+    active_pid = _active_run_pid(Path(log_file) if log_file else None)
+
+    if dry_run:
+        if active_pid:
+            logging.warning(tr("Note: a torrchive run is active (PID {}) — some listed files may be in active use, not actually leftover.").format(active_pid))
+        found = find_tmp_files(media_paths)
+        if not found:
+            logging.info(tr("No leftover temp files found."))
+            return
+        total_bytes = 0
+        logging.info(tr("Found {} leftover temp file(s):").format(len(found)))
+        for f in sorted(found):
+            try:
+                size = f.stat().st_size
+            except OSError:
+                size = 0
+            total_bytes += size
+            logging.info(f"  {size / (1024 * 1024):>8.1f} MB | {f}")
+        logging.info(tr("Total: {} GB (dry run — nothing deleted)").format(f"{total_bytes / (1024 ** 3):.2f}"))
+        return
+
+    if active_pid:
+        logging.error(tr("Refusing to delete anything — a torrchive run is active (PID {}). "
+                          "Its in-progress temp file would look identical to an abandoned one. "
+                          "Wait for it to finish, or use --dry-run to just inspect.").format(active_pid))
+        return
+
+    removed = cleanup_tmp_files(media_paths, silent=True)
+    if not removed:
+        logging.info(tr("No leftover temp files found."))
+        return
+
+    total_bytes = sum(size for _, size in removed)
+    logging.info(tr("Removed {} leftover temp file(s):").format(len(removed)))
+    for f, size in sorted(removed, key=lambda x: str(x[0])):
+        logging.info(f"  {size / (1024 * 1024):>8.1f} MB | {f}")
+    logging.info(tr("Total space reclaimed: {} GB").format(f"{total_bytes / (1024 ** 3):.2f}"))
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1713,11 +1815,13 @@ Examples:
   torrchive.py run --limit 10              # transcode 10 files then stop
   torrchive.py run --no-schedule           # ignore time window
   torrchive.py status                      # show space saved so far
+  torrchive.py clean                       # remove leftover temp files and report them
+  torrchive.py clean --dry-run             # just report leftover temp files, don't delete
   torrchive.py --config /path/config.yaml  # use alternate config file
 """,
     )
     parser.add_argument("mode", nargs="?", default=None,
-                        choices=["scan", "run", "status", "setup"],
+                        choices=["scan", "run", "status", "setup", "clean"],
                         help="Operation mode — omit to launch interactive menu")
     parser.add_argument("--config", type=Path,
                         default=Path(__file__).parent / "config.yaml",
@@ -1791,6 +1895,10 @@ Examples:
 
     if args.mode == "status":
         run_status(cfg)
+        return
+
+    if args.mode == "clean":
+        run_clean(cfg, dry_run=args.dry_run)
         return
 
     client = build_torrent_client(cfg.get("torrent_client", {"type": "none"}))
@@ -1904,6 +2012,7 @@ _WIZARD_STRINGS = {
         "menu_run":          "Lancer le transcodage",
         "menu_run_lib":      "Lancer le transcodage sur une bibliothèque spécifique",
         "menu_status":       "Afficher l'espace économisé",
+        "menu_clean":        "Nettoyer les fichiers temporaires résiduels",
         "menu_setup":        "Reconfigurer Torrchive",
         "menu_quit":         "Quitter",
         "menu_choice":       "Votre choix",
@@ -2001,6 +2110,7 @@ _WIZARD_STRINGS = {
         "menu_run":          "Run transcoding",
         "menu_run_lib":      "Run transcoding on a specific library",
         "menu_status":       "Show space savings",
+        "menu_clean":        "Clean up leftover temp files",
         "menu_setup":        "Reconfigure Torrchive",
         "menu_quit":         "Quit",
         "menu_choice":       "Your choice",
@@ -2145,9 +2255,9 @@ def run_guided_menu(cfg: dict, config_path: Path):
     Lets the user choose what to do without needing to know CLI flags.
     """
     if not RICH_AVAILABLE:
-        print("1. scan  2. run  3. status  4. setup")
+        print("1. scan  2. run  3. status  4. setup  5. clean")
         choice = input("Choice: ").strip()
-        mode_map = {"1": "scan", "2": "run", "3": "status", "4": "setup"}
+        mode_map = {"1": "scan", "2": "run", "3": "status", "4": "setup", "5": "clean"}
         return mode_map.get(choice, "scan"), {}, False, False, 0, [], False
 
     from rich.console import Console
@@ -2168,6 +2278,7 @@ def run_guided_menu(cfg: dict, config_path: Path):
         ("run",    _w(lang, "menu_run")),
         ("runlib", _w(lang, "menu_run_lib")),
         ("status", _w(lang, "menu_status")),
+        ("clean",  _w(lang, "menu_clean")),
         ("setup",  _w(lang, "menu_setup")),
         ("quit",   _w(lang, "menu_quit")),
     ]
@@ -2178,7 +2289,7 @@ def run_guided_menu(cfg: dict, config_path: Path):
     choice = input().strip()
 
     if not choice.isdigit() or not (1 <= int(choice) <= len(options)):
-        return "scan", {}, False, False, 0, []
+        return "scan", {}, False, False, 0, [], False
 
     mode_key = options[int(choice) - 1][0]
 
@@ -2188,7 +2299,7 @@ def run_guided_menu(cfg: dict, config_path: Path):
     if mode_key == "setup":
         return "setup", {}, False, False, 0, [], False
 
-    if mode_key in ("scan", "status"):
+    if mode_key in ("scan", "status", "clean"):
         return mode_key, {}, False, False, 0, [], False
 
     # run or runlib — ask additional options

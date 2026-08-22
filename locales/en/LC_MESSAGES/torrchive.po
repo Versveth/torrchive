@@ -191,3 +191,27 @@ msgstr "Overall"
 
 msgid "Saved: {} GB"
 msgstr "Saved: {} GB"
+
+msgid "No leftover temp files found."
+msgstr "No leftover temp files found."
+
+msgid "Found {} leftover temp file(s):"
+msgstr "Found {} leftover temp file(s):"
+
+msgid "Total: {} GB (dry run — nothing deleted)"
+msgstr "Total: {} GB (dry run — nothing deleted)"
+
+msgid "Removed {} leftover temp file(s):"
+msgstr "Removed {} leftover temp file(s):"
+
+msgid "Total space reclaimed: {} GB"
+msgstr "Total space reclaimed: {} GB"
+
+msgid "Skipping temp-file cleanup — a torrchive run is active (PID {})."
+msgstr "Skipping temp-file cleanup — a torrchive run is active (PID {})."
+
+msgid "Note: a torrchive run is active (PID {}) — some listed files may be in active use, not actually leftover."
+msgstr "Note: a torrchive run is active (PID {}) — some listed files may be in active use, not actually leftover."
+
+msgid "Refusing to delete anything — a torrchive run is active (PID {}). Its in-progress temp file would look identical to an abandoned one. Wait for it to finish, or use --dry-run to just inspect."
+msgstr "Refusing to delete anything — a torrchive run is active (PID {}). Its in-progress temp file would look identical to an abandoned one. Wait for it to finish, or use --dry-run to just inspect."

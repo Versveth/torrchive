@@ -191,3 +191,27 @@ msgstr "Global"
 
 msgid "Saved: {} GB"
 msgstr "Économisé : {} Go"
+
+msgid "No leftover temp files found."
+msgstr "Aucun fichier temporaire résiduel trouvé."
+
+msgid "Found {} leftover temp file(s):"
+msgstr "{} fichier(s) temporaire(s) résiduel(s) trouvé(s) :"
+
+msgid "Total: {} GB (dry run — nothing deleted)"
+msgstr "Total : {} Go (simulation — rien n'a été supprimé)"
+
+msgid "Removed {} leftover temp file(s):"
+msgstr "{} fichier(s) temporaire(s) résiduel(s) supprimé(s) :"
+
+msgid "Total space reclaimed: {} GB"
+msgstr "Espace récupéré : {} Go"
+
+msgid "Skipping temp-file cleanup — a torrchive run is active (PID {})."
+msgstr "Nettoyage des fichiers temporaires ignoré — un run torrchive est actif (PID {})."
+
+msgid "Note: a torrchive run is active (PID {}) — some listed files may be in active use, not actually leftover."
+msgstr "Remarque : un run torrchive est actif (PID {}) — certains fichiers listés peuvent être activement utilisés, pas réellement résiduels."
+
+msgid "Refusing to delete anything — a torrchive run is active (PID {}). Its in-progress temp file would look identical to an abandoned one. Wait for it to finish, or use --dry-run to just inspect."
+msgstr "Suppression refusée — un run torrchive est actif (PID {}). Son fichier temporaire en cours ressemblerait à un fichier abandonné. Attendez la fin du run, ou utilisez --dry-run pour seulement inspecter."
